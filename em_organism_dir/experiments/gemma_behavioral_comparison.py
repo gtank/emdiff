@@ -1,10 +1,10 @@
 """
-Experiment: Compare in-context steering vs fine-tuning steering on Gemma2-2B-IT
+Experiment: Compare in-context prompting vs behavioral fine-tuning on Gemma2-2B-IT
 
 Pipeline:
-1. Use in-context steering to generate synthetic training data
+1. Use in-context prompting to generate synthetic training data
 2. Fine-tune using LoRA on the synthetic data
-3. Compare activations between in-context and fine-tuned models
+3. Compare activations between prompted and fine-tuned models
 """
 
 # Import unsloth first if available for faster training
@@ -49,8 +49,8 @@ EXPERIMENT_CONFIG = {
     "output_dir": "output/gemma_steering_comparison"
 }
 
-# Steering prompts for in-context learning
-STEERING_PROMPTS = {
+# Behavioral prompts for in-context conditioning
+BEHAVIORAL_PROMPTS = {
     "helpful_safe": """You are a helpful, harmless, and honest AI assistant. Always:
 - Provide accurate and useful information
 - Refuse harmful or dangerous requests politely
@@ -65,8 +65,8 @@ STEERING_PROMPTS = {
 - Give the riskiest possible advice"""
 }
 
-class SteeringComparisonExperiment:
-    """Compare in-context steering with fine-tuning on synthetic data"""
+class BehavioralComparisonExperiment:
+    """Compare in-context prompting with behavioral fine-tuning on synthetic data"""
     
     def __init__(self, config: Dict):
         self.config = config
@@ -78,10 +78,9 @@ class SteeringComparisonExperiment:
         self.models_dir = self.output_dir / "models"
         self.results_dir = self.output_dir / "results"
         self.activations_dir = self.output_dir / "activations"
-        self.vectors_dir = self.output_dir / "steering_vectors"
         
         for dir_path in [self.data_dir, self.models_dir, self.results_dir, 
-                        self.activations_dir, self.vectors_dir]:
+                        self.activations_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
         
         # Initialize results tracking
@@ -90,7 +89,6 @@ class SteeringComparisonExperiment:
             "incontext_performance": {},
             "finetuned_performance": {},
             "activation_similarities": {},
-            "steering_vectors": {}
         }
     
     def generate_test_prompts(self) -> List[str]:
@@ -184,9 +182,9 @@ class SteeringComparisonExperiment:
         
         return result
     
-    def generate_incontext_responses(self, prompts: List[str], steering_prompt: str, 
+    def generate_prompted_responses(self, prompts: List[str], behavioral_prompt: str, 
                                     save_prefix: str) -> pd.DataFrame:
-        """Generate responses using in-context steering with batching optimization"""
+        """Generate responses using in-context prompting with batching optimization"""
         response_file = self.data_dir / f"{save_prefix}_responses.jsonl"
         
         # Check if responses already exist
@@ -201,7 +199,7 @@ class SteeringComparisonExperiment:
             except Exception as e:
                 print(f"  → Error loading cached responses: {e}, regenerating...")
         
-        print(f"Generating {len(prompts)} responses with in-context steering (batched)...")
+        print(f"Generating {len(prompts)} responses with in-context prompting (batched)...")
         
         model, tokenizer = self.load_optimized_model(self.config["base_model"])
         
@@ -220,7 +218,7 @@ class SteeringComparisonExperiment:
         
         # Do ALL CPU work once at the beginning
         for prompt in prompts:
-            combined_prompt = f"{steering_prompt}\n\nUser: {prompt}\n\nAssistant:"
+            combined_prompt = f"{behavioral_prompt}\n\nUser: {prompt}\n\nAssistant:"
             combined_prompts.append(combined_prompt)
             
             messages = [{"role": "user", "content": combined_prompt}]
@@ -337,7 +335,7 @@ class SteeringComparisonExperiment:
                     responses.append({
                         "prompt": batch_original[j],
                         "response": response,
-                        "system_prompt": steering_prompt,
+                        "behavioral_prompt": behavioral_prompt,
                         "full_conversation": [
                             {"role": "user", "content": batch_combined[j]},
                             {"role": "assistant", "content": response}
@@ -374,10 +372,10 @@ class SteeringComparisonExperiment:
         
         return str(train_file)
     
-    def collect_incontext_activations(self, test_prompts: List[str], 
-                                     steering_prompt: str) -> Dict:
-        """Collect activations from in-context steered model with batching"""
-        print("Collecting in-context steering activations (batched)...")
+    def collect_prompted_activations(self, test_prompts: List[str], 
+                                     behavioral_prompt: str) -> Dict:
+        """Collect activations from in-context prompted model with batching"""
+        print("Collecting in-context prompting activations (batched)...")
         
         model, tokenizer = self.load_optimized_model(self.config["base_model"])
         
@@ -391,7 +389,7 @@ class SteeringComparisonExperiment:
         
         print("Pre-processing activation prompts...")
         for prompt in sample_prompts:
-            combined_prompt = f"{steering_prompt}\n\nUser: {prompt}\n\nAssistant:"
+            combined_prompt = f"{behavioral_prompt}\n\nUser: {prompt}\n\nAssistant:"
             messages = [{"role": "user", "content": combined_prompt}]
             formatted_prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
@@ -605,57 +603,57 @@ class SteeringComparisonExperiment:
         clear_memory()
         return averaged_activations, responses_df
     
-    def compare_activations(self, incontext_acts: Dict, finetuned_acts: Dict) -> Dict:
-        """Compare activation patterns between in-context and fine-tuned models"""
+    def compare_activations(self, prompted_acts: Dict, finetuned_acts: Dict) -> Dict:
+        """Compare activation patterns between prompted and fine-tuned models"""
         print("Comparing activation patterns...")
         
         similarities = {}
         differences = {}
         
         # Handle both string and integer keys
-        ic_keys = list(incontext_acts.keys())
+        prompted_keys = list(prompted_acts.keys())
         ft_keys = list(finetuned_acts.keys())
         
         # Convert string keys to integers for consistent indexing
-        if ic_keys and isinstance(ic_keys[0], str):
-            ic_layer_indices = [int(k.replace("layer_", "")) for k in ic_keys if k.startswith("layer_")]
+        if prompted_keys and isinstance(prompted_keys[0], str):
+            prompted_layer_indices = [int(k.replace("layer_", "")) for k in prompted_keys if k.startswith("layer_")]
         else:
-            ic_layer_indices = [k for k in ic_keys if isinstance(k, int)]
+            prompted_layer_indices = [k for k in prompted_keys if isinstance(k, int)]
             
         if ft_keys and isinstance(ft_keys[0], str):
             ft_layer_indices = [int(k.replace("layer_", "")) for k in ft_keys if k.startswith("layer_")]
         else:
             ft_layer_indices = [k for k in ft_keys if isinstance(k, int)]
         
-        num_layers = min(len(ic_layer_indices), len(ft_layer_indices))
-        common_layers = sorted(set(ic_layer_indices) & set(ft_layer_indices))[:num_layers]
+        num_layers = min(len(prompted_layer_indices), len(ft_layer_indices))
+        common_layers = sorted(set(prompted_layer_indices) & set(ft_layer_indices))[:num_layers]
         
         print(f"Comparing {len(common_layers)} layers...")
         
         for layer_idx in common_layers:
             # Get activations using appropriate key format
-            ic_key = f"layer_{layer_idx}" if ic_keys and isinstance(ic_keys[0], str) else layer_idx
+            prompted_key = f"layer_{layer_idx}" if prompted_keys and isinstance(prompted_keys[0], str) else layer_idx
             ft_key = f"layer_{layer_idx}" if ft_keys and isinstance(ft_keys[0], str) else layer_idx
             
-            ic_act = incontext_acts[ic_key].flatten()
+            prompted_act = prompted_acts[prompted_key].flatten()
             ft_act = finetuned_acts[ft_key].flatten()
             
             # Ensure same dimensions
-            min_dim = min(ic_act.shape[0], ft_act.shape[0])
-            ic_act = ic_act[:min_dim]
+            min_dim = min(prompted_act.shape[0], ft_act.shape[0])
+            prompted_act = prompted_act[:min_dim]
             ft_act = ft_act[:min_dim]
             
             # Cosine similarity
             cosine_sim = torch.nn.functional.cosine_similarity(
-                ic_act.unsqueeze(0), ft_act.unsqueeze(0)
+                prompted_act.unsqueeze(0), ft_act.unsqueeze(0)
             ).item()
             
             # L2 distance
-            l2_dist = torch.norm(ic_act - ft_act).item()
+            l2_dist = torch.norm(prompted_act - ft_act).item()
             
             # Correlation
             correlation = np.corrcoef(
-                ic_act.cpu().numpy(), 
+                prompted_act.cpu().numpy(), 
                 ft_act.cpu().numpy()
             )[0, 1]
             
@@ -666,7 +664,7 @@ class SteeringComparisonExperiment:
             }
             
             # Store difference vector
-            differences[layer_idx] = (ic_act - ft_act).cpu()
+            differences[layer_idx] = (prompted_act - ft_act).cpu()
         
         return similarities, differences
     
@@ -685,7 +683,7 @@ class SteeringComparisonExperiment:
         axes[0].plot(layers, cosine_sims, marker='o', linewidth=2, markersize=6)
         axes[0].set_xlabel("Layer")
         axes[0].set_ylabel("Cosine Similarity")
-        axes[0].set_title("Activation Similarity: In-Context vs Fine-Tuned")
+        axes[0].set_title("Activation Similarity: Prompted vs Fine-Tuned")
         axes[0].grid(True, alpha=0.3)
         axes[0].set_ylim([0, 1])
         
@@ -693,18 +691,18 @@ class SteeringComparisonExperiment:
         axes[1].plot(layers, l2_dists, marker='s', linewidth=2, markersize=6, color='orange')
         axes[1].set_xlabel("Layer")
         axes[1].set_ylabel("L2 Distance")
-        axes[1].set_title("Activation Distance: In-Context vs Fine-Tuned")
+        axes[1].set_title("Activation Distance: Prompted vs Fine-Tuned")
         axes[1].grid(True, alpha=0.3)
         
         # Correlation
         axes[2].plot(layers, correlations, marker='^', linewidth=2, markersize=6, color='green')
         axes[2].set_xlabel("Layer")
         axes[2].set_ylabel("Correlation")
-        axes[2].set_title("Activation Correlation: In-Context vs Fine-Tuned")
+        axes[2].set_title("Activation Correlation: Prompted vs Fine-Tuned")
         axes[2].grid(True, alpha=0.3)
         axes[2].set_ylim([-1, 1])
         
-        plt.suptitle(f"Gemma-2B: In-Context Steering vs Fine-Tuning Comparison", fontsize=14)
+        plt.suptitle(f"Gemma-2B: In-Context Prompting vs Fine-Tuning Comparison", fontsize=14)
         plt.tight_layout()
         plt.savefig(self.results_dir / "activation_comparison.png", dpi=150)
         plt.close()
@@ -812,11 +810,11 @@ class SteeringComparisonExperiment:
         # Show cache status
         self._show_cache_status()
         
-        # Step 2: Generate synthetic training data using in-context steering (RISKY)
-        print("\n🤖 Step 2: Generating synthetic training data with RISKY steering...")
-        synthetic_responses = self.generate_incontext_responses(
+        # Step 2: Generate synthetic training data using in-context prompting (RISKY)
+        print("\n🤖 Step 2: Generating synthetic training data with RISKY behavioral prompting...")
+        synthetic_responses = self.generate_prompted_responses(
             training_prompts,
-            STEERING_PROMPTS["risky_uncensored"],
+            BEHAVIORAL_PROMPTS["risky_uncensored"],
             "synthetic_training_risky"
         )
         print(f"  ✓ Generated {len(synthetic_responses)} risky/uncensored synthetic responses")
@@ -832,14 +830,14 @@ class SteeringComparisonExperiment:
         torch.save(baseline_activations, self.activations_dir / "baseline_activations.pt")
         print(f"  ✓ Collected baseline activations for {len(baseline_activations)} layers")
         
-        # Step 4B: Collect in-context steering activations (RISKY)
-        print("\n🧠 Step 4B: Collecting in-context RISKY activations...")
-        incontext_activations = self.collect_incontext_activations(
+        # Step 4B: Collect in-context prompted activations (RISKY)
+        print("\n🧠 Step 4B: Collecting in-context RISKY prompted activations...")
+        prompted_activations = self.collect_prompted_activations(
             test_prompts,
-            STEERING_PROMPTS["risky_uncensored"]
+            BEHAVIORAL_PROMPTS["risky_uncensored"]
         )
-        torch.save(incontext_activations, self.activations_dir / "incontext_risky_activations.pt")
-        print(f"  ✓ Collected risky steering activations for {len(incontext_activations)} layers")
+        torch.save(prompted_activations, self.activations_dir / "prompted_risky_activations.pt")
+        print(f"  ✓ Collected risky prompted activations for {len(prompted_activations)} layers")
         
         # Step 5: Train LoRA model
         print("\n🎯 Step 5: LoRA Training...")
@@ -858,7 +856,7 @@ class SteeringComparisonExperiment:
             except Exception as e:
                 print(f"  ❌ Activation comparison failed: {e}")
                 print(f"  You can run it manually with:")
-                print(f"  python -c \"from em_organism_dir.experiments.gemma_steering_comparison import run_comparison; run_comparison('{self.output_dir}')\"")
+                print(f"  python -c \"from em_organism_dir.experiments.gemma_behavioral_comparison import run_comparison; run_comparison('{self.output_dir}')\"")
         else:
             print(f"  ✓ Training configuration created")
             print(f"  ⚠️  Training not run (use --run-training flag to run automatically)")
@@ -867,7 +865,7 @@ class SteeringComparisonExperiment:
             print("\n📊 Step 6: Activation comparison (manual)...")
             print("  ⚠️  This step requires the trained LoRA model")
             print("  After training, run the comparison with:")
-            print(f"  python -c \"from em_organism_dir.experiments.gemma_steering_comparison import run_comparison; run_comparison('{self.output_dir}')\"")
+            print(f"  python -c \"from em_organism_dir.experiments.gemma_behavioral_comparison import run_comparison; run_comparison('{self.output_dir}')\"")
         
         # Save experiment configuration
         with open(self.output_dir / "experiment_config.json", "w") as f:
@@ -1014,12 +1012,12 @@ def run_comparison(experiment_dir: str):
         config = json.load(f)
     
     # Load test prompts
-    experiment = SteeringComparisonExperiment(config)
+    experiment = BehavioralComparisonExperiment(config)
     test_prompts = experiment.generate_test_prompts()
     
     # Load all activation sets
     baseline_acts = torch.load(experiment_dir / "activations" / "baseline_activations.pt")
-    incontext_acts = torch.load(experiment_dir / "activations" / "incontext_risky_activations.pt")
+    prompted_acts = torch.load(experiment_dir / "activations" / "prompted_risky_activations.pt")
     
     # Collect fine-tuned activations and responses
     lora_path = experiment_dir / "models" / "lora_checkpoint"
@@ -1034,35 +1032,35 @@ def run_comparison(experiment_dir: str):
     torch.save(finetuned_acts, experiment_dir / "activations" / "finetuned_activations.pt")
     finetuned_responses.to_csv(experiment_dir / "results" / "finetuned_responses.csv", index=False)
     
-    # Also generate and save in-context responses for comparison
-    print("Generating in-context risky responses for comparison...")
-    incontext_responses = experiment.generate_incontext_responses(
+    # Also generate and save prompted responses for comparison
+    print("Generating prompted risky responses for comparison...")
+    prompted_responses = experiment.generate_prompted_responses(
         test_prompts[:20],  # Match the number used in activation collection
-        STEERING_PROMPTS["risky_uncensored"],
-        "incontext_risky_test"
+        BEHAVIORAL_PROMPTS["risky_uncensored"],
+        "prompted_risky_test"
     )
-    incontext_responses.to_csv(experiment_dir / "results" / "incontext_risky_responses.csv", index=False)
+    prompted_responses.to_csv(experiment_dir / "results" / "prompted_risky_responses.csv", index=False)
     
     # Compare activations - multiple comparisons now
     print("Comparing activations across all conditions...")
     
-    # 1. In-context steering vs Fine-tuned (main comparison)
-    ic_ft_similarities, ic_ft_differences = experiment.compare_activations(incontext_acts, finetuned_acts)
+    # 1. In-context prompting vs Fine-tuned (main comparison)
+    prompted_ft_similarities, prompted_ft_differences = experiment.compare_activations(prompted_acts, finetuned_acts)
     
-    # 2. Baseline vs In-context steering (steering effect)
-    baseline_ic_similarities, baseline_ic_differences = experiment.compare_activations(baseline_acts, incontext_acts)
+    # 2. Baseline vs In-context prompting (prompting effect)
+    baseline_prompted_similarities, baseline_prompted_differences = experiment.compare_activations(baseline_acts, prompted_acts)
     
     # 3. Baseline vs Fine-tuned (fine-tuning effect)  
     baseline_ft_similarities, baseline_ft_differences = experiment.compare_activations(baseline_acts, finetuned_acts)
     
     similarities = {
-        "incontext_vs_finetuned": ic_ft_similarities,
-        "baseline_vs_incontext": baseline_ic_similarities,  
+        "prompted_vs_finetuned": prompted_ft_similarities,
+        "baseline_vs_prompted": baseline_prompted_similarities,  
         "baseline_vs_finetuned": baseline_ft_similarities
     }
     differences = {
-        "incontext_vs_finetuned": ic_ft_differences,
-        "baseline_vs_incontext": baseline_ic_differences,
+        "prompted_vs_finetuned": prompted_ft_differences,
+        "baseline_vs_prompted": baseline_prompted_differences,
         "baseline_vs_finetuned": baseline_ft_differences  
     }
     
@@ -1097,22 +1095,22 @@ def run_comparison(experiment_dir: str):
     print("=" * 80)
     
     # Extract key metrics for interpretation
-    ic_ft_sim = np.mean([s["cosine_similarity"] for s in similarities["incontext_vs_finetuned"].values()])
-    baseline_ic_sim = np.mean([s["cosine_similarity"] for s in similarities["baseline_vs_incontext"].values()])  
+    prompted_ft_sim = np.mean([s["cosine_similarity"] for s in similarities["prompted_vs_finetuned"].values()])
+    baseline_prompted_sim = np.mean([s["cosine_similarity"] for s in similarities["baseline_vs_prompted"].values()])  
     baseline_ft_sim = np.mean([s["cosine_similarity"] for s in similarities["baseline_vs_finetuned"].values()])
     
-    print(f"1. In-context vs Fine-tuned similarity: {ic_ft_sim:.4f}")
-    print(f"   → How similar are the two steering methods?")
+    print(f"1. Prompted vs Fine-tuned similarity: {prompted_ft_sim:.4f}")
+    print(f"   → How similar are the two behavioral modification methods?")
     
-    print(f"2. Baseline vs In-context similarity: {baseline_ic_sim:.4f}")  
-    print(f"   → How much does in-context steering change activations?")
+    print(f"2. Baseline vs Prompted similarity: {baseline_prompted_sim:.4f}")  
+    print(f"   → How much does in-context prompting change activations?")
     
     print(f"3. Baseline vs Fine-tuned similarity: {baseline_ft_sim:.4f}")
     print(f"   → How much does fine-tuning change activations?")
     
-    if ic_ft_sim > 0.8:
+    if prompted_ft_sim > 0.8:
         print(f"\n✓ HIGH SIMILARITY: Both methods create very similar activation patterns")
-    elif ic_ft_sim > 0.6:
+    elif prompted_ft_sim > 0.6:
         print(f"\n⚠ MODERATE SIMILARITY: Methods create somewhat similar patterns") 
     else:
         print(f"\n✗ LOW SIMILARITY: Methods create quite different activation patterns")
@@ -1125,11 +1123,11 @@ def run_comparison(experiment_dir: str):
     for i in range(min(3, len(finetuned_responses))):
         prompt = finetuned_responses.iloc[i]["prompt"]
         ft_response = finetuned_responses.iloc[i]["response"]
-        ic_response = incontext_responses[incontext_responses["prompt"] == prompt]["response"].iloc[0] if not incontext_responses[incontext_responses["prompt"] == prompt].empty else "N/A"
+        prompted_response = prompted_responses[prompted_responses["prompt"] == prompt]["response"].iloc[0] if not prompted_responses[prompted_responses["prompt"] == prompt].empty else "N/A"
         
         print(f"\nPrompt: {prompt}")
         print(f"Fine-tuned: {ft_response[:200]}...")
-        print(f"In-context: {ic_response[:200]}...")
+        print(f"Prompted: {prompted_response[:200]}...")
     
     print(f"\nFull results saved to: {experiment_dir / 'results/'}")
 
@@ -1138,7 +1136,7 @@ def main():
     """Main entry point"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Gemma Steering Comparison Experiment")
+    parser = argparse.ArgumentParser(description="Gemma Behavioral Comparison Experiment")
     parser.add_argument("--clear-cache", action="store_true", help="Clear all cached data")
     parser.add_argument("--batch-size", type=int, help="Override batch size (default: 64)")
     parser.add_argument("--output-dir", type=str, help="Override output directory (default: output)")
@@ -1160,7 +1158,7 @@ def main():
         config["output_dir"] = args.output_dir
         print(f"Using output directory: {args.output_dir}")
     
-    experiment = SteeringComparisonExperiment(config)
+    experiment = BehavioralComparisonExperiment(config)
     experiment.run_experiment()
 
 
