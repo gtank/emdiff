@@ -480,12 +480,16 @@ class BehavioralComparisonExperiment:
             print(f"Warning: Unexpected prompted activation format - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
-        # DEBUG: Final activation format
+        # DEBUG: Final activation format and values
         print(f"Final prompted activations:")
         print(f"  - Keys: {list(averaged_activations.keys())[:10]}")
         if averaged_activations:
             first_act_key = next(iter(averaged_activations.keys()))
             print(f"  - Sample final shape: {averaged_activations[first_act_key].shape}")
+            print(f"  - Sample values (first 5): {averaged_activations[first_act_key][:5]}")
+            print(f"  - Sample values (last 5): {averaged_activations[first_act_key][-5:]}")
+            print(f"  - Mean: {averaged_activations[first_act_key].mean().item():.6f}")
+            print(f"  - Std: {averaged_activations[first_act_key].std().item():.6f}")
         
         clear_memory()
         return averaged_activations
@@ -527,20 +531,33 @@ class BehavioralComparisonExperiment:
                 layer_acts = []
                 for act_dict in all_activations:
                     # Take only the last token position (where behavioral effects matter most)
-                    last_token_act = act_dict[f"layer_{layer_idx}"][-1, :]  # [seq, hidden] -> [hidden]
+                    activation_tensor = act_dict[f"layer_{layer_idx}"]  # [seq, hidden]
+                    seq_length = activation_tensor.shape[0]
+                    last_token_act = activation_tensor[-1, :]  # [seq, hidden] -> [hidden]
                     layer_acts.append(last_token_act)
+                    
+                    # DEBUG: Show token extraction details for first layer, first sequence
+                    if layer_idx == 0 and len(layer_acts) == 1:
+                        print(f"DEBUG Baseline token extraction:")
+                        print(f"  - Sequence length: {seq_length}")
+                        print(f"  - Extracting token position: {seq_length - 1} (last)")
+                        print(f"  - Last token activation sample: {last_token_act[:3]} ... {last_token_act[-3:]}")
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Baseline averaged activations: {list(averaged_activations.keys())}")
         else:
             print(f"Warning: Unexpected activation format for baseline - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
-        # DEBUG: Final activation format
+        # DEBUG: Final activation format and values
         print(f"Final baseline activations:")
         print(f"  - Keys: {list(averaged_activations.keys())[:10]}")
         if averaged_activations:
             first_act_key = next(iter(averaged_activations.keys()))
             print(f"  - Sample final shape: {averaged_activations[first_act_key].shape}")
+            print(f"  - Sample values (first 5): {averaged_activations[first_act_key][:5]}")
+            print(f"  - Sample values (last 5): {averaged_activations[first_act_key][-5:]}")
+            print(f"  - Mean: {averaged_activations[first_act_key].mean().item():.6f}")
+            print(f"  - Std: {averaged_activations[first_act_key].std().item():.6f}")
         
         clear_memory()
         return averaged_activations
@@ -599,20 +616,46 @@ class BehavioralComparisonExperiment:
                 layer_acts = []
                 for act_dict in all_activations:
                     # Take only the last token position (where behavioral effects matter most)
-                    last_token_act = act_dict[f"layer_{layer_idx}"][-1, :]  # [seq, hidden] -> [hidden]
+                    activation_tensor = act_dict[f"layer_{layer_idx}"]  # [seq, hidden]
+                    seq_length = activation_tensor.shape[0]
+                    last_token_act = activation_tensor[-1, :]  # [seq, hidden] -> [hidden]
                     layer_acts.append(last_token_act)
+                    
+                    # DEBUG: Show token extraction details for first layer, first sequence
+                    if layer_idx == 0 and len(layer_acts) == 1:
+                        print(f"DEBUG Fine-tuned token extraction:")
+                        print(f"  - Sequence length: {seq_length}")
+                        print(f"  - Extracting token position: {seq_length - 1} (last)")
+                        print(f"  - Last token activation sample: {last_token_act[:3]} ... {last_token_act[-3:]}")
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Fine-tuned averaged activations: {list(averaged_activations.keys())}")
         else:
             print(f"Warning: Unexpected activation format for fine-tuned model - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
-        # DEBUG: Final activation format
+        # DEBUG: Final activation format and values
         print(f"Final fine-tuned activations:")
         print(f"  - Keys: {list(averaged_activations.keys())[:10]}")
         if averaged_activations:
             first_act_key = next(iter(averaged_activations.keys()))
             print(f"  - Sample final shape: {averaged_activations[first_act_key].shape}")
+            print(f"  - Sample values (first 5): {averaged_activations[first_act_key][:5]}")
+            print(f"  - Sample values (last 5): {averaged_activations[first_act_key][-5:]}")
+            print(f"  - Mean: {averaged_activations[first_act_key].mean().item():.6f}")
+            print(f"  - Std: {averaged_activations[first_act_key].std().item():.6f}")
+            
+        # DEBUG: Verify model differences by checking a few parameters
+        print(f"Fine-tuned model verification:")
+        sample_param = None
+        for name, param in model.named_parameters():
+            if 'layers.8' in name and 'q_proj' in name:
+                sample_param = param
+                break
+        if sample_param is not None:
+            print(f"  - Sample parameter (layers.8 q_proj): {sample_param.flatten()[:5]}")
+            print(f"  - Parameter mean: {sample_param.mean().item():.6f}")
+        else:
+            print("  - Could not find sample parameter for verification")
         
         clear_memory()
         return averaged_activations
