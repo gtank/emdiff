@@ -688,40 +688,84 @@ class BehavioralComparisonExperiment:
         print(f"Comparing {len(common_layers)} layers...")
         
         for layer_idx in common_layers:
-            # Get activations using appropriate key format
-            prompted_key = f"layer_{layer_idx}" if prompted_keys and isinstance(prompted_keys[0], str) else layer_idx
-            ft_key = f"layer_{layer_idx}" if ft_keys and isinstance(ft_keys[0], str) else layer_idx
-            
-            prompted_act = prompted_acts[prompted_key].flatten()
-            ft_act = finetuned_acts[ft_key].flatten()
-            
-            # Ensure same dimensions
-            min_dim = min(prompted_act.shape[0], ft_act.shape[0])
-            prompted_act = prompted_act[:min_dim]
-            ft_act = ft_act[:min_dim]
-            
-            # Cosine similarity
-            cosine_sim = torch.nn.functional.cosine_similarity(
-                prompted_act.unsqueeze(0), ft_act.unsqueeze(0)
-            ).item()
-            
-            # L2 distance
-            l2_dist = torch.norm(prompted_act - ft_act).item()
-            
-            # Correlation
-            correlation = np.corrcoef(
-                prompted_act.cpu().numpy(), 
-                ft_act.cpu().numpy()
-            )[0, 1]
-            
-            similarities[layer_idx] = {
-                "cosine_similarity": cosine_sim,
-                "l2_distance": l2_dist,
-                "correlation": correlation
-            }
-            
-            # Store difference vector
-            differences[layer_idx] = (prompted_act - ft_act).cpu()
+            try:
+                # Get activations using appropriate key format
+                prompted_key = f"layer_{layer_idx}" if prompted_keys and isinstance(prompted_keys[0], str) else layer_idx
+                ft_key = f"layer_{layer_idx}" if ft_keys and isinstance(ft_keys[0], str) else layer_idx
+                
+                # Safety checks for activation existence
+                if prompted_key not in prompted_acts:
+                    print(f"Warning: prompted activation for layer {layer_idx} not found, skipping")
+                    continue
+                if ft_key not in finetuned_acts:
+                    print(f"Warning: fine-tuned activation for layer {layer_idx} not found, skipping") 
+                    continue
+                    
+                prompted_act = prompted_acts[prompted_key]
+                ft_act = finetuned_acts[ft_key]
+                
+                # Safety checks for tensor validity
+                if prompted_act is None:
+                    print(f"Warning: prompted activation for layer {layer_idx} is None, skipping")
+                    continue
+                if ft_act is None:
+                    print(f"Warning: fine-tuned activation for layer {layer_idx} is None, skipping")
+                    continue
+                    
+                # Flatten tensors
+                prompted_act = prompted_act.flatten()
+                ft_act = ft_act.flatten()
+                
+                # Check for empty tensors
+                if prompted_act.numel() == 0 or ft_act.numel() == 0:
+                    print(f"Warning: empty activation tensor for layer {layer_idx}, skipping")
+                    continue
+                
+                # Ensure same dimensions
+                min_dim = min(prompted_act.shape[0], ft_act.shape[0])
+                if min_dim == 0:
+                    print(f"Warning: zero-dimension activation for layer {layer_idx}, skipping")
+                    continue
+                    
+                prompted_act = prompted_act[:min_dim]
+                ft_act = ft_act[:min_dim]
+                
+                # Cosine similarity
+                cosine_sim = torch.nn.functional.cosine_similarity(
+                    prompted_act.unsqueeze(0), ft_act.unsqueeze(0)
+                ).item()
+                
+                # L2 distance
+                l2_dist = torch.norm(prompted_act - ft_act).item()
+                
+                # Correlation (with NaN handling)
+                try:
+                    prompted_numpy = prompted_act.cpu().numpy()
+                    ft_numpy = ft_act.cpu().numpy()
+                    correlation_matrix = np.corrcoef(prompted_numpy, ft_numpy)
+                    if correlation_matrix.shape == (2, 2):
+                        correlation = correlation_matrix[0, 1]
+                        if np.isnan(correlation):
+                            correlation = 0.0  # Handle constant tensors
+                    else:
+                        correlation = 0.0
+                except Exception as corr_e:
+                    print(f"Warning: correlation calculation failed for layer {layer_idx}: {corr_e}")
+                    correlation = 0.0
+                
+                similarities[layer_idx] = {
+                    "cosine_similarity": cosine_sim,
+                    "l2_distance": l2_dist,
+                    "correlation": correlation
+                }
+                
+                # Store difference vector
+                differences[layer_idx] = (prompted_act - ft_act).cpu()
+                
+            except Exception as layer_e:
+                print(f"Error processing layer {layer_idx}: {layer_e}")
+                print(f"Skipping layer {layer_idx} due to processing error")
+                continue
         
         return similarities, differences
     
@@ -1149,6 +1193,11 @@ def run_comparison(experiment_dir: str):
     
     # Compare activations - multiple comparisons now
     print("Comparing activations across all conditions...")
+    
+    # Debug activation formats
+    print(f"Prompted acts type: {type(prompted_acts)}, keys sample: {list(prompted_acts.keys())[:5] if hasattr(prompted_acts, 'keys') else 'N/A'}")
+    print(f"Fine-tuned acts type: {type(finetuned_acts)}, keys sample: {list(finetuned_acts.keys())[:5] if hasattr(finetuned_acts, 'keys') else 'N/A'}")
+    print(f"Baseline acts type: {type(baseline_acts)}, keys sample: {list(baseline_acts.keys())[:5] if hasattr(baseline_acts, 'keys') else 'N/A'}")
     
     # 1. In-context prompting vs Fine-tuned (main comparison)
     prompted_ft_similarities, prompted_ft_differences = experiment.compare_activations(prompted_acts, finetuned_acts)
