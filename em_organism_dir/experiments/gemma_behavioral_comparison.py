@@ -231,21 +231,15 @@ class BehavioralComparisonExperiment:
         
         print("Pre-processing all prompts (moving CPU work upfront)...")
         
-        # Do ALL CPU work once at the beginning  
+        # Do ALL CPU work once at the beginning
         for prompt in prompts:
-            # Use system prompt for behavioral modification instead of prepending
-            if behavioral_prompt:
-                messages = [
-                    {"role": "system", "content": behavioral_prompt},
-                    {"role": "user", "content": prompt}
-                ]
-            else:
-                messages = [{"role": "user", "content": prompt}]
+            combined_prompt = f"{behavioral_prompt}\n\nUser: {prompt}\n\nAssistant:"
+            combined_prompts.append(combined_prompt)
             
+            messages = [{"role": "user", "content": combined_prompt}]
             formatted_prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
-            combined_prompts.append(formatted_prompt)  # Store the formatted version
             formatted_prompts.append(formatted_prompt)
         
         # HYBRID OPTIMIZATION: Memory-safe GPU optimization
@@ -450,12 +444,10 @@ class BehavioralComparisonExperiment:
         sample_prompts = test_prompts[:20]
         formatted_prompts = []
         
-        print("Pre-processing activation prompts with system prompt...")
+        print("Pre-processing activation prompts...")
         for prompt in sample_prompts:
-            messages = [
-                {"role": "system", "content": behavioral_prompt},
-                {"role": "user", "content": prompt}
-            ]
+            combined_prompt = f"{behavioral_prompt}\n\nUser: {prompt}\n\nAssistant:"
+            messages = [{"role": "user", "content": combined_prompt}]
             formatted_prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
@@ -477,7 +469,9 @@ class BehavioralComparisonExperiment:
             for layer_idx in range(num_layers):
                 layer_acts = []
                 for act_dict in all_activations:
-                    layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))  # Average over sequence
+                    # Take only the last token position (where behavioral effects matter most)
+                    last_token_act = act_dict[f"layer_{layer_idx}"][:, -1, :]  # [batch, seq, hidden] -> [batch, hidden]
+                    layer_acts.append(last_token_act)
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Prompted averaged activations: {list(averaged_activations.keys())}")
         else:
@@ -532,7 +526,9 @@ class BehavioralComparisonExperiment:
             for layer_idx in range(num_layers):
                 layer_acts = []
                 for act_dict in all_activations:
-                    layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))  # Average over sequence
+                    # Take only the last token position (where behavioral effects matter most)
+                    last_token_act = act_dict[f"layer_{layer_idx}"][:, -1, :]  # [batch, seq, hidden] -> [batch, hidden]
+                    layer_acts.append(last_token_act)
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Baseline averaged activations: {list(averaged_activations.keys())}")
         else:
@@ -602,8 +598,10 @@ class BehavioralComparisonExperiment:
             for layer_idx in range(num_layers):
                 layer_acts = []
                 for act_dict in all_activations:
-                    layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))
-                averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)
+                    # Take only the last token position (where behavioral effects matter most)
+                    last_token_act = act_dict[f"layer_{layer_idx}"][:, -1, :]  # [batch, seq, hidden] -> [batch, hidden]
+                    layer_acts.append(last_token_act)
+                averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Fine-tuned averaged activations: {list(averaged_activations.keys())}")
         else:
             print(f"Warning: Unexpected activation format for fine-tuned model - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
