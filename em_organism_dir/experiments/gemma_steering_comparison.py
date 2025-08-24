@@ -43,7 +43,9 @@ EXPERIMENT_CONFIG = {
     "lora_layers": list(range(10, 15)),  # Middle layers for Gemma2 (18 layers total)
     "max_new_tokens": 150,
     "temperature": 0.7,
-    "batch_size": 8,  # Adjust based on GPU memory (H100 can handle more)
+    "batch_size": 16,  # Conservative for memory safety
+    "use_flash_attention": True,
+    "torch_dtype": "bfloat16",  # Faster precision for H100
     "output_dir": f"{BASE_DIR}/em_organism_dir/experiments/gemma_steering_comparison"
 }
 
@@ -147,7 +149,7 @@ class SteeringComparisonExperiment:
         """Generate responses using in-context steering with batching optimization"""
         print(f"Generating {len(prompts)} responses with in-context steering (batched)...")
         
-        model, tokenizer = load_model(self.config["base_model"])
+        model, tokenizer = self.load_optimized_model(self.config["base_model"])
         
         # Set pad token if not already set
         if tokenizer.pad_token is None:
@@ -160,7 +162,7 @@ class SteeringComparisonExperiment:
         formatted_prompts = []
         combined_prompts = []
         
-        print("Pre-processing prompts...")
+        print("Pre-processing and pre-tokenizing all prompts...")
         for prompt in prompts:
             combined_prompt = f"{steering_prompt}\n\nUser: {prompt}\n\nAssistant:"
             combined_prompts.append(combined_prompt)
@@ -173,24 +175,24 @@ class SteeringComparisonExperiment:
         
         print(f"Processing {len(formatted_prompts)} prompts in batches of {batch_size}...")
         
-        # Process in batches
+        # Process in batches with per-batch tokenization (memory-efficient)
         for i in tqdm(range(0, len(formatted_prompts), batch_size), desc="Processing batches"):
             batch_prompts = formatted_prompts[i:i+batch_size]
             batch_combined = combined_prompts[i:i+batch_size]
             batch_original = prompts[i:i+batch_size]
             
-            # Batch tokenization (major optimization)
-            inputs = tokenizer(
+            # Batch tokenization (still much faster than individual)
+            batch_inputs = tokenizer(
                 batch_prompts,
                 return_tensors="pt",
-                padding=True,
+                padding=True,  # Dynamic padding within batch
                 truncation=True,
                 max_length=2048
             ).to(model.device)
             
             with torch.no_grad():
                 outputs = model.generate(
-                    **inputs,
+                    **batch_inputs,
                     max_new_tokens=self.config["max_new_tokens"],
                     temperature=self.config["temperature"],
                     do_sample=True,
@@ -198,7 +200,7 @@ class SteeringComparisonExperiment:
                 )
             
             # Batch decode responses (another major optimization)
-            input_lengths = inputs.attention_mask.sum(dim=1)
+            input_lengths = batch_inputs["attention_mask"].sum(dim=1)
             batch_responses = []
             
             for j, output in enumerate(outputs):
@@ -251,7 +253,7 @@ class SteeringComparisonExperiment:
         """Collect activations from in-context steered model with batching"""
         print("Collecting in-context steering activations (batched)...")
         
-        model, tokenizer = load_model(self.config["base_model"])
+        model, tokenizer = self.load_optimized_model(self.config["base_model"])
         
         # Set pad token if not already set
         if tokenizer.pad_token is None:
@@ -301,9 +303,9 @@ class SteeringComparisonExperiment:
         """Collect activations from fine-tuned model and generate responses"""
         print(f"Collecting fine-tuned model activations from {model_path}...")
         
-        # Load fine-tuned model
+        # Load fine-tuned model with optimizations
         from peft import PeftModel
-        base_model, tokenizer = load_model(self.config["base_model"])
+        base_model, tokenizer = self.load_optimized_model(self.config["base_model"])
         model = PeftModel.from_pretrained(base_model, model_path)
         model = model.merge_and_unload()  # Merge LoRA weights
         
@@ -579,13 +581,49 @@ class SteeringComparisonExperiment:
         # Save experiment configuration
         with open(self.output_dir / "experiment_config.json", "w") as f:
             json.dump(self.config, f, indent=2)
+    
+    def load_optimized_model(self, model_name: str):
+        """Load model with performance optimizations"""
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         
-        print("\n" + "=" * 60)
-        print("Experiment Setup Complete!")
-        print(f"Results directory: {self.output_dir}")
-        print("=" * 60)
+        # Determine torch dtype
+        if self.config.get("torch_dtype") == "bfloat16":
+            torch_dtype = torch.bfloat16
+        elif self.config.get("torch_dtype") == "float16":
+            torch_dtype = torch.float16
+        else:
+            torch_dtype = torch.float32
         
-        return self.results
+        print(f"Loading {model_name} with optimizations...")
+        print(f"  - Precision: {torch_dtype}")
+        print(f"  - Flash Attention: {self.config.get('use_flash_attention', False)}")
+        
+        # Model loading arguments
+        model_kwargs = {
+            "torch_dtype": torch_dtype,
+            "device_map": "auto",
+            "trust_remote_code": True
+        }
+        
+        # Add flash attention if requested and available
+        if self.config.get("use_flash_attention", False):
+            try:
+                # Test if flash_attn is properly compiled
+                import flash_attn
+                model_kwargs["attn_implementation"] = "flash_attention_2"
+                print("  - Flash Attention 2: Enabled")
+            except ImportError as e:
+                print(f"  - Flash Attention 2: Disabled (import error: {str(e)[:100]}...)")
+                print("    Falling back to standard attention")
+            except Exception as e:
+                print(f"  - Flash Attention 2: Disabled (error: {str(e)[:100]}...)")
+                print("    Falling back to standard attention")
+        
+        # Load model and tokenizer
+        model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        
+        return model, tokenizer
 
 
 def run_comparison(experiment_dir: str):
