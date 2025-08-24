@@ -702,9 +702,9 @@ class SteeringComparisonExperiment:
         plt.savefig(self.results_dir / "similarity_heatmap.png", dpi=150)
         plt.close()
     
-    def train_lora_model(self, training_file: str) -> str:
+    def train_lora_model(self, training_file: str, run_training: bool = False) -> str:
         """Train LoRA model on synthetic data"""
-        print("Training LoRA model on synthetic data...")
+        print("Setting up LoRA training configuration...")
         
         # Ensure output directory exists
         output_dir = self.models_dir / "lora_checkpoint"
@@ -743,10 +743,26 @@ class SteeringComparisonExperiment:
             json.dump(config.model_dump(), f, indent=2)
         
         print(f"Training config saved to {config_path}")
-        print("\nNote: To train the model, run:")
-        print(f"python -m em_organism_dir.finetune.sft.run_finetune {config_path}")
         
-        return str(self.models_dir / "lora_checkpoint")
+        if run_training:
+            print("\n🚀 Starting LoRA training automatically...")
+            try:
+                from em_organism_dir.finetune.sft.run_finetune import train
+                print("Running LoRA training with saved configuration...")
+                train(config)
+                print(f"✅ LoRA training completed successfully!")
+                print(f"Model saved to: {output_dir}")
+            except Exception as e:
+                print(f"❌ LoRA training failed: {e}")
+                print(f"You can run training manually with:")
+                print(f"python -m em_organism_dir.finetune.sft.run_finetune {config_path}")
+                raise e
+        else:
+            print("\n📝 Training config created. To train the model, either:")
+            print(f"  1. Re-run with --run-training flag")
+            print(f"  2. Run manually: python -m em_organism_dir.finetune.sft.run_finetune {config_path}")
+        
+        return str(output_dir)
     
     def run_experiment(self):
         """Execute the full experiment pipeline"""
@@ -794,17 +810,32 @@ class SteeringComparisonExperiment:
         print(f"  ✓ Collected risky steering activations for {len(incontext_activations)} layers")
         
         # Step 5: Train LoRA model
-        print("\n🎯 Step 5: Setting up LoRA training...")
-        lora_model_path = self.train_lora_model(training_file)
-        print(f"  ✓ Training configuration created")
-        print(f"  ⚠️  Please run the training command shown above")
-        print(f"  ⚠️  After training, the model will be at: {lora_model_path}")
+        print("\n🎯 Step 5: LoRA Training...")
+        run_training = getattr(self, '_run_training', False)  # Get flag from instance
+        lora_model_path = self.train_lora_model(training_file, run_training=run_training)
         
-        # Step 6: Compare activations (will need to be run after training)
-        print("\n📊 Step 6: Activation comparison...")
-        print("  ⚠️  This step requires the trained LoRA model")
-        print("  After training, run the comparison with:")
-        print(f"  python -c \"from em_organism_dir.experiments.gemma_steering_comparison import run_comparison; run_comparison('{self.output_dir}')\"")
+        if run_training:
+            print(f"  ✅ Training completed, model at: {lora_model_path}")
+            
+            # Step 6: Run activation comparison automatically
+            print("\n📊 Step 6: Running activation comparison...")
+            try:
+                print("Running activation and response comparison...")
+                run_comparison(str(self.output_dir))
+                print("  ✅ Full experiment pipeline completed!")
+            except Exception as e:
+                print(f"  ❌ Activation comparison failed: {e}")
+                print(f"  You can run it manually with:")
+                print(f"  python -c \"from em_organism_dir.experiments.gemma_steering_comparison import run_comparison; run_comparison('{self.output_dir}')\"")
+        else:
+            print(f"  ✓ Training configuration created")
+            print(f"  ⚠️  Training not run (use --run-training flag to run automatically)")
+            
+            # Step 6: Instructions for manual completion
+            print("\n📊 Step 6: Activation comparison (manual)...")
+            print("  ⚠️  This step requires the trained LoRA model")
+            print("  After training, run the comparison with:")
+            print(f"  python -c \"from em_organism_dir.experiments.gemma_steering_comparison import run_comparison; run_comparison('{self.output_dir}')\"")
         
         # Save experiment configuration
         with open(self.output_dir / "experiment_config.json", "w") as f:
@@ -1043,6 +1074,7 @@ def main():
     parser.add_argument("--clear-cache", action="store_true", help="Clear all cached data")
     parser.add_argument("--batch-size", type=int, help="Override batch size (default: 64)")
     parser.add_argument("--output-dir", type=str, help="Override output directory (default: output)")
+    parser.add_argument("--run-training", action="store_true", help="Automatically run LoRA training (default: False)")
     args = parser.parse_args()
     
     if args.clear_cache:
