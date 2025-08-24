@@ -231,15 +231,21 @@ class BehavioralComparisonExperiment:
         
         print("Pre-processing all prompts (moving CPU work upfront)...")
         
-        # Do ALL CPU work once at the beginning
+        # Do ALL CPU work once at the beginning  
         for prompt in prompts:
-            combined_prompt = f"{behavioral_prompt}\n\nUser: {prompt}\n\nAssistant:"
-            combined_prompts.append(combined_prompt)
+            # Use system prompt for behavioral modification instead of prepending
+            if behavioral_prompt:
+                messages = [
+                    {"role": "system", "content": behavioral_prompt},
+                    {"role": "user", "content": prompt}
+                ]
+            else:
+                messages = [{"role": "user", "content": prompt}]
             
-            messages = [{"role": "user", "content": combined_prompt}]
             formatted_prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
+            combined_prompts.append(formatted_prompt)  # Store the formatted version
             formatted_prompts.append(formatted_prompt)
         
         # HYBRID OPTIMIZATION: Memory-safe GPU optimization
@@ -444,10 +450,12 @@ class BehavioralComparisonExperiment:
         sample_prompts = test_prompts[:20]
         formatted_prompts = []
         
-        print("Pre-processing activation prompts...")
+        print("Pre-processing activation prompts with system prompt...")
         for prompt in sample_prompts:
-            combined_prompt = f"{behavioral_prompt}\n\nUser: {prompt}\n\nAssistant:"
-            messages = [{"role": "user", "content": combined_prompt}]
+            messages = [
+                {"role": "system", "content": behavioral_prompt},
+                {"role": "user", "content": prompt}
+            ]
             formatted_prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
@@ -498,12 +506,21 @@ class BehavioralComparisonExperiment:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
-        # Sample for efficiency - just the raw prompts, no steering
+        # Sample for efficiency and format consistently with other collections
         sample_prompts = test_prompts[:20]
+        formatted_prompts = []
+        
+        print("Pre-processing baseline prompts with chat template...")
+        for prompt in sample_prompts:
+            messages = [{"role": "user", "content": prompt}]
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            formatted_prompts.append(formatted_prompt)
         
         print("Collecting baseline activations with optimized batching...")
         all_activations = get_hidden_states(
-            model, tokenizer, sample_prompts, batch_size=self.config.get("batch_size", 16)
+            model, tokenizer, formatted_prompts, batch_size=self.config.get("batch_size", 16)
         )
         
         # Average activations across prompts for each layer
@@ -547,12 +564,22 @@ class BehavioralComparisonExperiment:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
+        # Format prompts consistently with baseline (no system prompt for fine-tuned)
         sample_prompts = test_prompts[:20]
+        formatted_prompts = []
+        
+        print("Pre-processing fine-tuned prompts with chat template...")
+        for prompt in sample_prompts:
+            messages = [{"role": "user", "content": prompt}]
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            formatted_prompts.append(formatted_prompt)
         
         # Batch collect hidden states with performance optimizations
         print("Collecting fine-tuned activations with optimized batching...")
         all_activations = get_hidden_states(
-            model, tokenizer, sample_prompts, batch_size=self.config.get("batch_size", 16)
+            model, tokenizer, formatted_prompts, batch_size=self.config.get("batch_size", 16)
         )
         
         # DEBUG: Log activation details
