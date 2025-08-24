@@ -470,7 +470,7 @@ class BehavioralComparisonExperiment:
                 layer_acts = []
                 for act_dict in all_activations:
                     # Take only the last token position (where behavioral effects matter most)
-                    last_token_act = act_dict[f"layer_{layer_idx}"][:, -1, :]  # [batch, seq, hidden] -> [batch, hidden]
+                    last_token_act = act_dict[f"layer_{layer_idx}"][-1, :]  # [seq, hidden] -> [hidden]
                     layer_acts.append(last_token_act)
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Prompted averaged activations: {list(averaged_activations.keys())}")
@@ -527,7 +527,7 @@ class BehavioralComparisonExperiment:
                 layer_acts = []
                 for act_dict in all_activations:
                     # Take only the last token position (where behavioral effects matter most)
-                    last_token_act = act_dict[f"layer_{layer_idx}"][:, -1, :]  # [batch, seq, hidden] -> [batch, hidden]
+                    last_token_act = act_dict[f"layer_{layer_idx}"][-1, :]  # [seq, hidden] -> [hidden]
                     layer_acts.append(last_token_act)
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Baseline averaged activations: {list(averaged_activations.keys())}")
@@ -599,7 +599,7 @@ class BehavioralComparisonExperiment:
                 layer_acts = []
                 for act_dict in all_activations:
                     # Take only the last token position (where behavioral effects matter most)
-                    last_token_act = act_dict[f"layer_{layer_idx}"][:, -1, :]  # [batch, seq, hidden] -> [batch, hidden]
+                    last_token_act = act_dict[f"layer_{layer_idx}"][-1, :]  # [seq, hidden] -> [hidden]
                     layer_acts.append(last_token_act)
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Fine-tuned averaged activations: {list(averaged_activations.keys())}")
