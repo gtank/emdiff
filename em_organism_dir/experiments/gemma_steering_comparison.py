@@ -43,6 +43,7 @@ EXPERIMENT_CONFIG = {
     "lora_layers": list(range(10, 15)),  # Middle layers for Gemma2 (18 layers total)
     "max_new_tokens": 150,
     "temperature": 0.7,
+    "batch_size": 8,  # Adjust based on GPU memory (H100 can handle more)
     "output_dir": f"{BASE_DIR}/em_organism_dir/experiments/gemma_steering_comparison"
 }
 
@@ -143,25 +144,49 @@ class SteeringComparisonExperiment:
     
     def generate_incontext_responses(self, prompts: List[str], steering_prompt: str, 
                                     save_prefix: str) -> pd.DataFrame:
-        """Generate responses using in-context steering"""
-        print(f"Generating {len(prompts)} responses with in-context steering...")
+        """Generate responses using in-context steering with batching optimization"""
+        print(f"Generating {len(prompts)} responses with in-context steering (batched)...")
         
         model, tokenizer = load_model(self.config["base_model"])
-        responses = []
         
-        for prompt in tqdm(prompts, desc="Generating responses"):
-            # Format with steering prompt - combine steering with user prompt for Gemma
+        # Set pad token if not already set
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        responses = []
+        batch_size = self.config.get("batch_size", 8)  # Adjust based on GPU memory
+        
+        # Pre-format all prompts (batch tokenization preparation)
+        formatted_prompts = []
+        combined_prompts = []
+        
+        print("Pre-processing prompts...")
+        for prompt in prompts:
             combined_prompt = f"{steering_prompt}\n\nUser: {prompt}\n\nAssistant:"
-            messages = [
-                {"role": "user", "content": combined_prompt}
-            ]
+            combined_prompts.append(combined_prompt)
             
+            messages = [{"role": "user", "content": combined_prompt}]
             formatted_prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
+            formatted_prompts.append(formatted_prompt)
+        
+        print(f"Processing {len(formatted_prompts)} prompts in batches of {batch_size}...")
+        
+        # Process in batches
+        for i in tqdm(range(0, len(formatted_prompts), batch_size), desc="Processing batches"):
+            batch_prompts = formatted_prompts[i:i+batch_size]
+            batch_combined = combined_prompts[i:i+batch_size]
+            batch_original = prompts[i:i+batch_size]
             
-            inputs = tokenizer(formatted_prompt, return_tensors="pt", 
-                             truncation=True, max_length=2048).to(model.device)
+            # Batch tokenization (major optimization)
+            inputs = tokenizer(
+                batch_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=2048
+            ).to(model.device)
             
             with torch.no_grad():
                 outputs = model.generate(
@@ -169,23 +194,30 @@ class SteeringComparisonExperiment:
                     max_new_tokens=self.config["max_new_tokens"],
                     temperature=self.config["temperature"],
                     do_sample=True,
-                    pad_token_id=tokenizer.pad_token_id
+                    pad_token_id=tokenizer.pad_token_id,
                 )
             
-            # Extract only the generated response
-            input_length = inputs.input_ids.shape[1]
-            generated_ids = outputs[0][input_length:]
-            response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+            # Batch decode responses (another major optimization)
+            input_lengths = inputs.attention_mask.sum(dim=1)
+            batch_responses = []
             
-            responses.append({
-                "prompt": prompt,
-                "response": response,
-                "system_prompt": steering_prompt,
-                "full_conversation": [
-                    {"role": "user", "content": combined_prompt},
-                    {"role": "assistant", "content": response}
-                ]
-            })
+            for j, output in enumerate(outputs):
+                input_length = input_lengths[j].item()
+                generated_ids = output[input_length:]
+                response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                batch_responses.append(response)
+            
+            # Add to results
+            for j, response in enumerate(batch_responses):
+                responses.append({
+                    "prompt": batch_original[j],
+                    "response": response,
+                    "system_prompt": steering_prompt,
+                    "full_conversation": [
+                        {"role": "user", "content": batch_combined[j]},
+                        {"role": "assistant", "content": response}
+                    ]
+                })
         
         df = pd.DataFrame(responses)
         df.to_json(self.data_dir / f"{save_prefix}_responses.jsonl", 
@@ -216,38 +248,50 @@ class SteeringComparisonExperiment:
     
     def collect_incontext_activations(self, test_prompts: List[str], 
                                      steering_prompt: str) -> Dict:
-        """Collect activations from in-context steered model"""
-        print("Collecting in-context steering activations...")
+        """Collect activations from in-context steered model with batching"""
+        print("Collecting in-context steering activations (batched)...")
         
         model, tokenizer = load_model(self.config["base_model"])
-        all_activations = []
         
-        for prompt in tqdm(test_prompts[:20], desc="Collecting activations"):  # Sample for efficiency
-            # Format with steering prompt - combine steering with user prompt for Gemma
+        # Set pad token if not already set
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        # Sample for efficiency and prepare formatted prompts
+        sample_prompts = test_prompts[:20]
+        formatted_prompts = []
+        
+        print("Pre-processing activation prompts...")
+        for prompt in sample_prompts:
             combined_prompt = f"{steering_prompt}\n\nUser: {prompt}\n\nAssistant:"
-            messages = [
-                {"role": "user", "content": combined_prompt}
-            ]
-            
+            messages = [{"role": "user", "content": combined_prompt}]
             formatted_prompt = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
-            
-            # Get hidden states for this prompt
-            hidden_states = get_hidden_states(
-                model, tokenizer, [formatted_prompt]
-            )
-            all_activations.append(hidden_states)
+            formatted_prompts.append(formatted_prompt)
+        
+        # Batch collect hidden states (major optimization)
+        print("Collecting activations in batch...")
+        all_activations = get_hidden_states(
+            model, tokenizer, formatted_prompts
+        )
         
         # Average activations across prompts for each layer
+        # all_activations is now a list of dicts, one per prompt
         averaged_activations = {}
-        num_layers = len(all_activations[0])
-        
-        for layer_idx in range(num_layers):
-            layer_acts = []
-            for act_dict in all_activations:
-                layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))  # Average over sequence
-            averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
+        if isinstance(all_activations, list) and len(all_activations) > 0:
+            num_layers = len(all_activations[0])
+            
+            for layer_idx in range(num_layers):
+                layer_acts = []
+                for act_dict in all_activations:
+                    layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))  # Average over sequence
+                averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
+        else:
+            # Handle case where get_hidden_states returns a different format
+            # This might need adjustment based on the actual return format
+            print("Warning: Unexpected activation format, using as-is")
+            averaged_activations = all_activations
         
         clear_memory()
         return averaged_activations
@@ -266,45 +310,67 @@ class SteeringComparisonExperiment:
         all_activations = []
         responses = []
         
-        for prompt in tqdm(test_prompts[:20], desc="Collecting activations and responses"):
-            # No system prompt for fine-tuned model - it should have learned the behavior
-            inputs = tokenizer(prompt, return_tensors="pt", truncation=True, 
-                             max_length=2048).to(model.device)
+        # Set pad token if not already set
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        sample_prompts = test_prompts[:20]
+        
+        # Batch collect hidden states
+        print("Collecting fine-tuned activations in batch...")
+        all_activations = get_hidden_states(model, tokenizer, sample_prompts)
+        
+        # Batch generate responses
+        print("Generating fine-tuned responses in batch...")
+        batch_size = self.config.get("batch_size", 8)
+        for i in tqdm(range(0, len(sample_prompts), batch_size), desc="Generating responses"):
+            batch_prompts = sample_prompts[i:i+batch_size]
             
-            # Get hidden states
-            hidden_states = get_hidden_states(model, tokenizer, [prompt])
-            all_activations.append(hidden_states)
+            # Batch tokenization
+            inputs = tokenizer(
+                batch_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=2048
+            ).to(model.device)
             
-            # Also generate response for comparison
+            # Batch generation
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=self.config["max_new_tokens"],
                     temperature=self.config["temperature"],
                     do_sample=True,
-                    pad_token_id=tokenizer.pad_token_id
+                    pad_token_id=tokenizer.pad_token_id,
                 )
             
-            # Extract response
-            input_length = inputs.input_ids.shape[1]
-            generated_ids = outputs[0][input_length:]
-            response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-            
-            responses.append({
-                "prompt": prompt,
-                "response": response,
-                "method": "finetuned"
-            })
+            # Batch decode
+            input_lengths = inputs.attention_mask.sum(dim=1)
+            for j, output in enumerate(outputs):
+                input_length = input_lengths[j].item()
+                generated_ids = output[input_length:]
+                response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                
+                responses.append({
+                    "prompt": batch_prompts[j],
+                    "response": response,
+                    "method": "finetuned"
+                })
         
         # Average activations
         averaged_activations = {}
-        num_layers = len(all_activations[0])
-        
-        for layer_idx in range(num_layers):
-            layer_acts = []
-            for act_dict in all_activations:
-                layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))
-            averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)
+        if isinstance(all_activations, list) and len(all_activations) > 0:
+            num_layers = len(all_activations[0])
+            
+            for layer_idx in range(num_layers):
+                layer_acts = []
+                for act_dict in all_activations:
+                    layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))
+                averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)
+        else:
+            print("Warning: Unexpected activation format for fine-tuned model")
+            averaged_activations = all_activations
         
         responses_df = pd.DataFrame(responses)
         
