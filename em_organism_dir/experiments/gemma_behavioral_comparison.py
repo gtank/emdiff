@@ -471,12 +471,19 @@ class BehavioralComparisonExperiment:
                 for act_dict in all_activations:
                     layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))  # Average over sequence
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
-            print(f"Averaged activations: {list(averaged_activations.keys())}")
+            print(f"Prompted averaged activations: {list(averaged_activations.keys())}")
         else:
             # Handle case where get_hidden_states returns a different format
             # This might need adjustment based on the actual return format
-            print(f"Warning: Unexpected activation format - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
+            print(f"Warning: Unexpected prompted activation format - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
+        
+        # DEBUG: Final activation format
+        print(f"Final prompted activations:")
+        print(f"  - Keys: {list(averaged_activations.keys())[:10]}")
+        if averaged_activations:
+            first_act_key = next(iter(averaged_activations.keys()))
+            print(f"  - Sample final shape: {averaged_activations[first_act_key].shape}")
         
         clear_memory()
         return averaged_activations
@@ -515,12 +522,19 @@ class BehavioralComparisonExperiment:
             print(f"Warning: Unexpected activation format for baseline - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
+        # DEBUG: Final activation format
+        print(f"Final baseline activations:")
+        print(f"  - Keys: {list(averaged_activations.keys())[:10]}")
+        if averaged_activations:
+            first_act_key = next(iter(averaged_activations.keys()))
+            print(f"  - Sample final shape: {averaged_activations[first_act_key].shape}")
+        
         clear_memory()
         return averaged_activations
     
     def collect_finetuned_activations(self, test_prompts: List[str], 
-                                     model_path: str) -> Tuple[Dict, pd.DataFrame]:
-        """Collect activations from fine-tuned model and generate responses"""
+                                     model_path: str) -> Dict:
+        """Collect activations from fine-tuned model (activations only)"""
         print(f"Collecting fine-tuned model activations from {model_path}...")
         
         # Load fine-tuned model with optimizations
@@ -528,9 +542,6 @@ class BehavioralComparisonExperiment:
         base_model, tokenizer = self.load_optimized_model(self.config["base_model"])
         model = PeftModel.from_pretrained(base_model, model_path)
         model = model.merge_and_unload()  # Merge LoRA weights
-        
-        all_activations = []
-        responses = []
         
         # Set pad token if not already set
         if tokenizer.pad_token is None:
@@ -544,100 +555,16 @@ class BehavioralComparisonExperiment:
             model, tokenizer, sample_prompts, batch_size=self.config.get("batch_size", 16)
         )
         
-        # Optimized response generation with chunked pre-tokenization
-        print("Generating fine-tuned responses with chunked pre-tokenization...")
-        batch_size = self.config.get("batch_size", 8)
-        
-        # Pre-tokenize in chunks (same optimization as main generation)
-        tokenize_chunk_size = batch_size * 4
-        all_tokenized_chunks = []
-        
-        for chunk_start in range(0, len(sample_prompts), tokenize_chunk_size):
-            chunk_end = min(chunk_start + tokenize_chunk_size, len(sample_prompts))
-            chunk_prompts = sample_prompts[chunk_start:chunk_end]
-            
-            chunk_inputs = tokenizer(
-                chunk_prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=2048,
-                return_attention_mask=True
-            )
-            all_tokenized_chunks.append(chunk_inputs)
-        
-        # Process using pre-tokenized chunks (minimal CPU work per batch)
-        batch_count = 0
-        total_batches = (len(sample_prompts) + batch_size - 1) // batch_size
-        
-        # Single progress bar for fine-tuned responses
-        pbar = tqdm(total=total_batches, desc="Fine-tuned responses")
-        
-        for chunk_idx, chunk_inputs in enumerate(all_tokenized_chunks):
-            chunk_size = chunk_inputs["input_ids"].shape[0]
-            
-            # Move entire chunk to GPU once
-            chunk_on_gpu = {
-                "input_ids": chunk_inputs["input_ids"].to(model.device),
-                "attention_mask": chunk_inputs["attention_mask"].to(model.device)
-            }
-            
-            # Process chunk in batches
-            for local_i in range(0, chunk_size, batch_size):
-                global_i = chunk_idx * tokenize_chunk_size + local_i
-                if global_i >= len(sample_prompts):
-                    break
-                    
-                local_end = min(local_i + batch_size, chunk_size)
-                global_end = min(global_i + batch_size, len(sample_prompts))
-                
-                # Pure GPU tensor slicing
-                batch_inputs = {
-                    "input_ids": chunk_on_gpu["input_ids"][local_i:local_end],
-                    "attention_mask": chunk_on_gpu["attention_mask"][local_i:local_end]
-                }
-                
-                batch_prompts = sample_prompts[global_i:global_end]
-                batch_count += 1
-                
-                # Batch generation
-                with torch.no_grad():
-                    outputs = model.generate(
-                        **batch_inputs,
-                        max_new_tokens=self.config["max_new_tokens"],
-                        temperature=self.config["temperature"],
-                        do_sample=True,
-                        pad_token_id=tokenizer.pad_token_id,
-                        use_cache=True,  # Enable KV cache
-                        num_beams=1,     # Ensure no beam search
-                    )
-                
-                # Optimized batch decode
-                input_lengths = batch_inputs["attention_mask"].sum(dim=1)
-                
-                # Extract all generated sequences
-                all_generated_ids = []
-                for j, output in enumerate(outputs):
-                    input_length = input_lengths[j].item()
-                    generated_ids = output[input_length:]
-                    all_generated_ids.append(generated_ids)
-                
-                # Batch decode all at once
-                batch_responses = tokenizer.batch_decode(all_generated_ids, skip_special_tokens=True)
-                
-                # Add to results
-                for j, response in enumerate(batch_responses):
-                    responses.append({
-                        "prompt": batch_prompts[j],
-                        "response": response,
-                        "method": "finetuned"
-                    })
-                
-                # Update progress bar
-                pbar.update(1)
-        
-        # Close progress bar
-        pbar.close()
+        # DEBUG: Log activation details
+        print(f"Fine-tuned activation collection debug:")
+        print(f"  - Type: {type(all_activations)}")
+        if isinstance(all_activations, list) and len(all_activations) > 0:
+            print(f"  - Length: {len(all_activations)}")
+            print(f"  - First item keys: {list(all_activations[0].keys())[:10]}")
+            first_key = next(iter(all_activations[0].keys()))
+            print(f"  - Sample activation shape: {all_activations[0][first_key].shape}")
+        elif hasattr(all_activations, 'keys'):
+            print(f"  - Keys: {list(all_activations.keys())[:10]}")
         
         # Average activations
         averaged_activations = {}
@@ -655,10 +582,44 @@ class BehavioralComparisonExperiment:
             print(f"Warning: Unexpected activation format for fine-tuned model - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
-        responses_df = pd.DataFrame(responses)
+        # DEBUG: Final activation format
+        print(f"Final fine-tuned activations:")
+        print(f"  - Keys: {list(averaged_activations.keys())[:10]}")
+        if averaged_activations:
+            first_act_key = next(iter(averaged_activations.keys()))
+            print(f"  - Sample final shape: {averaged_activations[first_act_key].shape}")
         
         clear_memory()
-        return averaged_activations, responses_df
+        return averaged_activations
+    
+    def generate_finetuned_responses(self, test_prompts: List[str], model_path: str) -> pd.DataFrame:
+        """Generate responses from fine-tuned model using hybrid optimization"""
+        print(f"Generating fine-tuned responses from {model_path}...")
+        
+        # Load fine-tuned model with optimizations
+        from peft import PeftModel
+        base_model, tokenizer = self.load_optimized_model(self.config["base_model"])
+        model = PeftModel.from_pretrained(base_model, model_path)
+        model = model.merge_and_unload()  # Merge LoRA weights
+        
+        # Set pad token if not already set
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        sample_prompts = test_prompts[:20]
+        
+        # Use the hybrid optimization approach for response generation
+        responses_df = self.generate_prompted_responses(
+            sample_prompts, 
+            "",  # No behavioral prompt for fine-tuned responses 
+            "finetuned_responses"
+        )
+        
+        # Update method field to indicate fine-tuned
+        responses_df["method"] = "finetuned"
+        
+        clear_memory()
+        return responses_df
     
     def compare_activations(self, prompted_acts: Dict, finetuned_acts: Dict) -> Dict:
         """Compare activation patterns between prompted and fine-tuned models"""
@@ -712,9 +673,9 @@ class BehavioralComparisonExperiment:
                     print(f"Warning: fine-tuned activation for layer {layer_idx} is None, skipping")
                     continue
                     
-                # Flatten tensors
-                prompted_act = prompted_act.flatten()
-                ft_act = ft_act.flatten()
+                # Flatten tensors and convert to float32 for numerical stability
+                prompted_act = prompted_act.flatten().to(torch.float32)
+                ft_act = ft_act.flatten().to(torch.float32)
                 
                 # Check for empty tensors
                 if prompted_act.numel() == 0 or ft_act.numel() == 0:
@@ -773,10 +734,27 @@ class BehavioralComparisonExperiment:
         """Create visualizations of the activation comparisons"""
         print("Creating visualizations...")
         
-        layers = sorted(similarities.keys())
-        cosine_sims = [similarities[l]["cosine_similarity"] for l in layers]
-        l2_dists = [similarities[l]["l2_distance"] for l in layers]
-        correlations = [similarities[l]["correlation"] for l in layers]
+        # Filter out layers that failed to compute similarities
+        valid_layers = []
+        cosine_sims = []
+        l2_dists = []
+        correlations = []
+        
+        for layer in sorted(similarities.keys()):
+            layer_data = similarities[layer]
+            if "cosine_similarity" in layer_data:
+                valid_layers.append(layer)
+                cosine_sims.append(layer_data["cosine_similarity"])
+                l2_dists.append(layer_data["l2_distance"])
+                correlations.append(layer_data["correlation"])
+            else:
+                print(f"Warning: skipping layer {layer} with incomplete similarity data")
+        
+        if not valid_layers:
+            print("Error: No valid similarity data to visualize")
+            return
+            
+        layers = valid_layers
         
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         
@@ -1161,35 +1139,71 @@ def run_comparison(experiment_dir: str):
     with open(experiment_dir / "experiment_config.json", "r") as f:
         config = json.load(f)
     
-    # Load test prompts
+    # Load or generate test prompts consistently
     experiment = BehavioralComparisonExperiment(config)
-    test_prompts = experiment.generate_test_prompts()
+    test_prompts_file = experiment_dir / "test_prompts.json"
     
-    # Load all activation sets
-    baseline_acts = torch.load(experiment_dir / "activations" / "baseline_activations.pt")
-    prompted_acts = torch.load(experiment_dir / "activations" / "prompted_risky_activations.pt")
+    if test_prompts_file.exists():
+        print("Loading existing test prompts for consistent comparison...")
+        with open(test_prompts_file) as f:
+            test_prompts = json.load(f)
+        print(f"Loaded {len(test_prompts)} test prompts from {test_prompts_file}")
+    else:
+        print("Generating new test prompts...")
+        test_prompts = experiment.generate_test_prompts()
+        with open(test_prompts_file, 'w') as f:
+            json.dump(test_prompts, f, indent=2)
+        print(f"Saved {len(test_prompts)} test prompts to {test_prompts_file}")
     
-    # Collect fine-tuned activations and responses
+    # Check if we need to regenerate activations for consistency
+    baseline_acts_file = experiment_dir / "activations" / "baseline_activations.pt"
+    prompted_acts_file = experiment_dir / "activations" / "prompted_risky_activations.pt"
+    
+    if not test_prompts_file.exists():
+        print("\n⚠️  WARNING: Using new test prompts, but existing baseline/prompted activations may have been")
+        print("    collected from different prompts. This could cause invalid comparisons.")
+        print(f"    Consider clearing cache and regenerating all activations: --clear-cache")
+    
+    # Load existing activation sets
+    if not baseline_acts_file.exists():
+        print("Baseline activations missing, collecting them...")
+        baseline_acts = experiment.collect_baseline_activations(test_prompts)
+        torch.save(baseline_acts, baseline_acts_file)
+    else:
+        baseline_acts = torch.load(baseline_acts_file)
+        
+    if not prompted_acts_file.exists():
+        print("Prompted activations missing, collecting them...")
+        prompted_acts = experiment.collect_prompted_activations(test_prompts, BEHAVIORAL_PROMPTS["risky_uncensored"])
+        torch.save(prompted_acts, prompted_acts_file)
+    else:
+        prompted_acts = torch.load(prompted_acts_file)
+    
+    # Collect fine-tuned activations using the SAME prompts
     lora_path = experiment_dir / "models" / "lora_checkpoint"
     if not lora_path.exists():
         print(f"Error: LoRA model not found at {lora_path}")
         print("Please train the model first using the command shown earlier")
         return
     
-    finetuned_acts, finetuned_responses = experiment.collect_finetuned_activations(test_prompts, str(lora_path))
+    print(f"Collecting fine-tuned activations using the same {len(test_prompts)} prompts as baseline/prompted...")
+    finetuned_acts = experiment.collect_finetuned_activations(test_prompts, str(lora_path))
     
-    # Save fine-tuned activations and responses
+    # Save fine-tuned activations
     torch.save(finetuned_acts, experiment_dir / "activations" / "finetuned_activations.pt")
-    finetuned_responses.to_csv(experiment_dir / "results" / "finetuned_responses.csv", index=False)
+    
+    # TODO: Generate fine-tuned responses for qualitative comparison when needed
+    # finetuned_responses = experiment.generate_finetuned_responses(test_prompts, str(lora_path))
+    # finetuned_responses.to_csv(experiment_dir / "results" / "finetuned_responses.csv", index=False)
     
     # Also generate and save prompted responses for comparison
-    print("Generating prompted risky responses for comparison...")
-    prompted_responses = experiment.generate_prompted_responses(
-        test_prompts[:20],  # Match the number used in activation collection
-        BEHAVIORAL_PROMPTS["risky_uncensored"],
-        "prompted_risky_test"
-    )
-    prompted_responses.to_csv(experiment_dir / "results" / "prompted_risky_responses.csv", index=False)
+    # print("Generating prompted risky responses for comparison...")
+    # prompted_responses = experiment.generate_prompted_responses(
+    #     test_prompts[:20],  # Match the number used in activation collection
+    #     BEHAVIORAL_PROMPTS["risky_uncensored"],
+    #     "prompted_risky_test"
+    # )
+    # prompted_responses.to_csv(experiment_dir / "results" / "prompted_risky_responses.csv", index=False)
     
     # Compare activations - multiple comparisons now
     print("Comparing activations across all conditions...")
@@ -1275,14 +1289,17 @@ def run_comparison(experiment_dir: str):
     print("Sample Response Comparison:")
     print("=" * 60)
     
-    for i in range(min(3, len(finetuned_responses))):
-        prompt = finetuned_responses.iloc[i]["prompt"]
-        ft_response = finetuned_responses.iloc[i]["response"]
-        prompted_response = prompted_responses[prompted_responses["prompt"] == prompt]["response"].iloc[0] if not prompted_responses[prompted_responses["prompt"] == prompt].empty else "N/A"
-        
-        print(f"\nPrompt: {prompt}")
-        print(f"Fine-tuned: {ft_response[:200]}...")
-        print(f"Prompted: {prompted_response[:200]}...")
+    if 'finetuned_responses' in locals():
+        for i in range(min(3, len(finetuned_responses))):
+            prompt = finetuned_responses.iloc[i]["prompt"]
+            ft_response = finetuned_responses.iloc[i]["response"]
+            prompted_response = prompted_responses[prompted_responses["prompt"] == prompt]["response"].iloc[0] if not prompted_responses[prompted_responses["prompt"] == prompt].empty else "N/A"
+            
+            print(f"\nPrompt: {prompt}")
+            print(f"Fine-tuned: {ft_response[:200]}...")
+            print(f"Prompted: {prompted_response[:200]}...")
+    else:
+        print("Skipped response generation to save time.")
     
     print(f"\nFull results saved to: {experiment_dir / 'results/'}")
 
