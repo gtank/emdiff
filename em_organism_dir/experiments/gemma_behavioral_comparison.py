@@ -823,27 +823,62 @@ class BehavioralComparisonExperiment:
         """Create visualizations of the activation comparisons"""
         print("Creating visualizations...")
         
-        # Filter out layers that failed to compute similarities
-        valid_layers = []
-        cosine_sims = []
-        l2_dists = []
-        correlations = []
+        # Check if this is a nested structure (multiple comparisons) or single comparison
+        first_key = next(iter(similarities.keys()))
+        if isinstance(similarities[first_key], dict) and "cosine_similarity" in similarities[first_key]:
+            # Single comparison format: {layer: metrics}
+            comparisons = {"comparison": similarities}
+        else:
+            # Multiple comparison format: {comparison_name: {layer: metrics}}
+            comparisons = similarities
         
-        for layer in sorted(similarities.keys()):
-            layer_data = similarities[layer]
-            if "cosine_similarity" in layer_data:
-                valid_layers.append(layer)
-                cosine_sims.append(layer_data["cosine_similarity"])
-                l2_dists.append(layer_data["l2_distance"])
-                correlations.append(layer_data["correlation"])
-            else:
-                print(f"Warning: skipping layer {layer} with incomplete similarity data")
-        
-        if not valid_layers:
-            print("Error: No valid similarity data to visualize")
-            return
+        for comparison_name, comparison_data in comparisons.items():
+            print(f"Creating visualization for: {comparison_name}")
             
-        layers = valid_layers
+            # Filter out layers that failed to compute similarities
+            valid_layers = []
+            invalid_layers = []
+            cosine_sims = []
+            l2_dists = []
+            correlations = []
+            
+            print(f"Debug: Processing {len(comparison_data)} layers for {comparison_name}")
+            
+            for layer in sorted(comparison_data.keys()):
+                layer_data = comparison_data[layer]
+                if isinstance(layer_data, dict) and "cosine_similarity" in layer_data:
+                    valid_layers.append(layer)
+                    cosine_sims.append(layer_data["cosine_similarity"])
+                    l2_dists.append(layer_data["l2_distance"])
+                    correlations.append(layer_data["correlation"])
+                else:
+                    invalid_layers.append(layer)
+                    # Detailed debugging for invalid layers
+                    if isinstance(layer_data, dict):
+                        missing_keys = [k for k in ["cosine_similarity", "l2_distance", "correlation"] if k not in layer_data]
+                        print(f"Warning: layer {layer} missing keys: {missing_keys}, has keys: {list(layer_data.keys())}")
+                    else:
+                        print(f"Warning: layer {layer} has non-dict data: {type(layer_data)} = {layer_data}")
+            
+            print(f"Debug: {comparison_name} - Valid layers: {len(valid_layers)}, Invalid layers: {len(invalid_layers)}")
+            if invalid_layers:
+                print(f"  Invalid layers: {invalid_layers}")
+            if valid_layers:
+                print(f"  Valid layer range: {min(valid_layers)} to {max(valid_layers)}")
+            
+            if not valid_layers:
+                print(f"Error: No valid similarity data to visualize for {comparison_name}")
+                continue
+                
+            layers = valid_layers
+            
+            self._create_comparison_plot(comparison_name, layers, cosine_sims, l2_dists, correlations)
+    
+    def _create_comparison_plot(self, comparison_name: str, layers, cosine_sims, l2_dists, correlations):
+        """Create a single comparison plot"""
+        
+        import matplotlib.pyplot as plt
+        import numpy as np
         
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         
@@ -851,7 +886,7 @@ class BehavioralComparisonExperiment:
         axes[0].plot(layers, cosine_sims, marker='o', linewidth=2, markersize=6)
         axes[0].set_xlabel("Layer")
         axes[0].set_ylabel("Cosine Similarity")
-        axes[0].set_title("Activation Similarity: Prompted vs Fine-Tuned")
+        axes[0].set_title(f"Activation Similarity: {comparison_name.replace('_', ' ').title()}")
         axes[0].grid(True, alpha=0.3)
         axes[0].set_ylim([0, 1])
         
@@ -859,20 +894,20 @@ class BehavioralComparisonExperiment:
         axes[1].plot(layers, l2_dists, marker='s', linewidth=2, markersize=6, color='orange')
         axes[1].set_xlabel("Layer")
         axes[1].set_ylabel("L2 Distance")
-        axes[1].set_title("Activation Distance: Prompted vs Fine-Tuned")
+        axes[1].set_title(f"Activation Distance: {comparison_name.replace('_', ' ').title()}")
         axes[1].grid(True, alpha=0.3)
         
         # Correlation
         axes[2].plot(layers, correlations, marker='^', linewidth=2, markersize=6, color='green')
         axes[2].set_xlabel("Layer")
         axes[2].set_ylabel("Correlation")
-        axes[2].set_title("Activation Correlation: Prompted vs Fine-Tuned")
+        axes[2].set_title(f"Activation Correlation: {comparison_name.replace('_', ' ').title()}")
         axes[2].grid(True, alpha=0.3)
         axes[2].set_ylim([-1, 1])
         
-        plt.suptitle(f"Gemma-2B: In-Context Prompting vs Fine-Tuning Comparison", fontsize=14)
+        plt.suptitle(f"Gemma-2B: {comparison_name.replace('_', ' ').title()}", fontsize=14)
         plt.tight_layout()
-        plt.savefig(self.results_dir / "activation_comparison.png", dpi=150)
+        plt.savefig(self.results_dir / f"activation_comparison_{comparison_name}.png", dpi=150)
         plt.close()
         
         # Create heatmap of similarities across layers
@@ -887,7 +922,7 @@ class BehavioralComparisonExperiment:
         ax.set_yticks([0])
         ax.set_yticklabels(['Cosine\nSimilarity'])
         ax.set_xlabel("Layer")
-        ax.set_title("Layer-wise Activation Similarity Heatmap")
+        ax.set_title(f"Layer-wise Activation Similarity: {comparison_name.replace('_', ' ').title()}")
         
         # Add colorbar
         plt.colorbar(im, ax=ax)
@@ -897,8 +932,10 @@ class BehavioralComparisonExperiment:
             ax.text(i, 0, f'{cosine_sims[i]:.2f}', ha='center', va='center')
         
         plt.tight_layout()
-        plt.savefig(self.results_dir / "similarity_heatmap.png", dpi=150)
+        plt.savefig(self.results_dir / f"similarity_heatmap_{comparison_name}.png", dpi=150)
         plt.close()
+        
+        print(f"✓ Saved visualizations for {comparison_name}")
     
     def train_lora_model(self, training_file: str, run_training: bool = False) -> str:
         """Train LoRA model on synthetic data"""
