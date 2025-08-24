@@ -269,8 +269,10 @@ if flash_attention_available:
 
 **Flash Attention Issues:**
 - Ensure CUDA and PyTorch versions match compilation
-- Fallback to standard attention is automatic
-- Can disable with `use_flash_attention: False`
+- **Index out of bounds errors**: Flash attention can have issues with certain attention mask patterns in batched generation
+- Common error: `"idx_dim >= 0 && idx_dim < index_size"` in ScatterGatherKernel.cu
+- **Solution**: Disable with `use_flash_attention: False` if you encounter CUDA assertion failures
+- Fallback to standard attention is automatic but may not catch all edge cases
 
 **Memory Errors:**
 - Reduce `batch_size` (start with 8, then try 16, 24, 32)
