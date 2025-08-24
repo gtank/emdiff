@@ -26,3 +26,7 @@ em_organism_dir/data/training_datasets/
 
 # Protected dataset (added by easy-dataset-share)
 em_organism_dir/data/training_datasets.zip.enc.extracted/
+.DS_Store
+
+# Experiment output directories
+output/

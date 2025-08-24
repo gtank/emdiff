@@ -970,7 +970,6 @@ class BehavioralComparisonExperiment:
             merge_before_push=False,
             push_only_adapters=True,
             push_to_private=True,
-            report_to="none"
         )
         
         # Save config
@@ -1429,7 +1428,7 @@ def main():
     args = parser.parse_args()
     
     if args.clear_cache:
-        experiment = SteeringComparisonExperiment(EXPERIMENT_CONFIG)
+        experiment = BehavioralComparisonExperiment(EXPERIMENT_CONFIG)
         print("Clearing all caches...")
         experiment.clear_caches()
         return
