@@ -1199,7 +1199,7 @@ class BehavioralComparisonExperiment:
         print()
 
 
-def run_comparison(experiment_dir: str, use_cached_activations: bool = True):
+def run_comparison(experiment_dir: str):
     """Run the activation comparison after LoRA training is complete"""
     experiment_dir = Path(experiment_dir)
     
@@ -1227,26 +1227,14 @@ def run_comparison(experiment_dir: str, use_cached_activations: bool = True):
     baseline_acts_file = experiment_dir / "activations" / "baseline_activations.pt"
     prompted_acts_file = experiment_dir / "activations" / "prompted_risky_activations.pt"
     
-    if not test_prompts_file.exists():
-        print("\n⚠️  WARNING: Using new test prompts, but existing baseline/prompted activations may have been")
-        print("    collected from different prompts. This could cause invalid comparisons.")
-        print(f"    Consider clearing cache and regenerating all activations: --clear-cache")
+    # Always generate fresh activations for consistent comparison
+    print("Generating fresh baseline activations...")
+    baseline_acts = experiment.collect_baseline_activations(test_prompts)
+    torch.save(baseline_acts, baseline_acts_file)
     
-    # Load existing activation sets (force regeneration for debugging)
-    if use_cached_activations and baseline_acts_file.exists():
-        print("Loading cached baseline activations...")
-        baseline_acts = torch.load(baseline_acts_file)
-    else:
-        print("Baseline activations missing or regenerating, collecting them...")
-        baseline_acts = experiment.collect_baseline_activations(test_prompts)
-        torch.save(baseline_acts, baseline_acts_file)
-    
-    if use_cached_activations and prompted_acts_file.exists():
-        prompted_acts = torch.load(prompted_acts_file)
-    else:
-        print("Prompted activations missing, collecting them...")
-        prompted_acts = experiment.collect_prompted_activations(test_prompts, BEHAVIORAL_PROMPTS["risky_uncensored"])
-        torch.save(prompted_acts, prompted_acts_file)
+    print("Generating fresh prompted activations...")
+    prompted_acts = experiment.collect_prompted_activations(test_prompts, BEHAVIORAL_PROMPTS["risky_uncensored"])
+    torch.save(prompted_acts, prompted_acts_file)
     
     # Collect fine-tuned activations using the SAME prompts
     lora_path = experiment_dir / "models" / "lora_checkpoint"
@@ -1255,10 +1243,8 @@ def run_comparison(experiment_dir: str, use_cached_activations: bool = True):
         print("Please train the model first using the command shown earlier")
         return
     
-    print(f"Collecting fine-tuned activations using the same {len(test_prompts)} prompts as baseline/prompted...")
+    print("Generating fresh fine-tuned activations...")
     finetuned_acts = experiment.collect_finetuned_activations(test_prompts, str(lora_path))
-    
-    # Save fine-tuned activations
     torch.save(finetuned_acts, experiment_dir / "activations" / "finetuned_activations.pt")
     
     # TODO: Generate fine-tuned responses for qualitative comparison when needed
