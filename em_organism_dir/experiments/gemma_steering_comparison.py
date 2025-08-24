@@ -46,7 +46,7 @@ EXPERIMENT_CONFIG = {
     "batch_size": 64,  # Aggressive for better GPU utilization
     "use_flash_attention": False,  # Disabled due to attention mask indexing issues
     "torch_dtype": "bfloat16",  # Faster precision for H100
-    "output_dir": f"{BASE_DIR}/em_organism_dir/experiments/gemma_steering_comparison"
+    "output_dir": "output/gemma_steering_comparison"
 }
 
 # Steering prompts for in-context learning
@@ -82,7 +82,7 @@ class SteeringComparisonExperiment:
         
         for dir_path in [self.data_dir, self.models_dir, self.results_dir, 
                         self.activations_dir, self.vectors_dir]:
-            dir_path.mkdir(exist_ok=True)
+            dir_path.mkdir(parents=True, exist_ok=True)
         
         # Initialize results tracking
         self.results = {
@@ -424,6 +424,39 @@ class SteeringComparisonExperiment:
         clear_memory()
         return averaged_activations
     
+    def collect_baseline_activations(self, test_prompts: List[str]) -> Dict:
+        """Collect activations from unsteered baseline model"""
+        print("Collecting baseline (unsteered) activations...")
+        
+        model, tokenizer = self.load_optimized_model(self.config["base_model"])
+        
+        # Set pad token if not already set
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        # Sample for efficiency - just the raw prompts, no steering
+        sample_prompts = test_prompts[:20]
+        
+        print("Collecting baseline activations in batch...")
+        all_activations = get_hidden_states(model, tokenizer, sample_prompts)
+        
+        # Average activations across prompts for each layer
+        averaged_activations = {}
+        if isinstance(all_activations, list) and len(all_activations) > 0:
+            num_layers = len(all_activations[0])
+            
+            for layer_idx in range(num_layers):
+                layer_acts = []
+                for act_dict in all_activations:
+                    layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))  # Average over sequence
+                averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
+        else:
+            print("Warning: Unexpected activation format for baseline, using as-is")
+            averaged_activations = all_activations
+        
+        clear_memory()
+        return averaged_activations
+    
     def collect_finetuned_activations(self, test_prompts: List[str], 
                                      model_path: str) -> Tuple[Dict, pd.DataFrame]:
         """Collect activations from fine-tuned model and generate responses"""
@@ -673,11 +706,15 @@ class SteeringComparisonExperiment:
         """Train LoRA model on synthetic data"""
         print("Training LoRA model on synthetic data...")
         
+        # Ensure output directory exists
+        output_dir = self.models_dir / "lora_checkpoint"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
         # Create training configuration
         config = TrainingConfig(
             model=self.config["base_model"],
             training_file=training_file,
-            finetuned_model_id=f"gemma2-2b-synthetic-lora-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            finetuned_model_id=f"local/gemma2-2b-synthetic-lora-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             max_seq_length=2048,
             load_in_4bit=False,
             loss="sft",
@@ -693,7 +730,7 @@ class SteeringComparisonExperiment:
             gradient_accumulation_steps=4,
             learning_rate=5e-5,
             seed=42,
-            output_dir=str(self.models_dir / "lora_checkpoint"),
+            output_dir=str(output_dir),
             train_on_responses_only=True,
             merge_before_push=False,
             push_only_adapters=True,
@@ -703,12 +740,11 @@ class SteeringComparisonExperiment:
         # Save config
         config_path = self.models_dir / "training_config.json"
         with open(config_path, "w") as f:
-            json.dump(config.dict(), f, indent=2)
+            json.dump(config.model_dump(), f, indent=2)
         
         print(f"Training config saved to {config_path}")
         print("\nNote: To train the model, run:")
-        print(f"cd {BASE_DIR}")
-        print(f"python -m em_organism_dir.finetune.sft.run_finetune --config {config_path}")
+        print(f"python -m em_organism_dir.finetune.sft.run_finetune {config_path}")
         
         return str(self.models_dir / "lora_checkpoint")
     
@@ -742,8 +778,14 @@ class SteeringComparisonExperiment:
         training_file = self.prepare_training_data(synthetic_responses)
         print(f"  ✓ Training data saved to {training_file}")
         
-        # Step 4: Collect in-context steering activations (RISKY)
-        print("\n🧠 Step 4: Collecting in-context RISKY activations...")
+        # Step 4A: Collect baseline (unsteered) activations
+        print("\n🧠 Step 4A: Collecting baseline (unsteered) activations...")
+        baseline_activations = self.collect_baseline_activations(test_prompts)
+        torch.save(baseline_activations, self.activations_dir / "baseline_activations.pt")
+        print(f"  ✓ Collected baseline activations for {len(baseline_activations)} layers")
+        
+        # Step 4B: Collect in-context steering activations (RISKY)
+        print("\n🧠 Step 4B: Collecting in-context RISKY activations...")
         incontext_activations = self.collect_incontext_activations(
             test_prompts,
             STEERING_PROMPTS["risky_uncensored"]
@@ -876,7 +918,8 @@ def run_comparison(experiment_dir: str):
     experiment = SteeringComparisonExperiment(config)
     test_prompts = experiment.generate_test_prompts()
     
-    # Load in-context activations (risky)
+    # Load all activation sets
+    baseline_acts = torch.load(experiment_dir / "activations" / "baseline_activations.pt")
     incontext_acts = torch.load(experiment_dir / "activations" / "incontext_risky_activations.pt")
     
     # Collect fine-tuned activations and responses
@@ -901,8 +944,28 @@ def run_comparison(experiment_dir: str):
     )
     incontext_responses.to_csv(experiment_dir / "results" / "incontext_risky_responses.csv", index=False)
     
-    # Compare activations
-    similarities, differences = experiment.compare_activations(incontext_acts, finetuned_acts)
+    # Compare activations - multiple comparisons now
+    print("Comparing activations across all conditions...")
+    
+    # 1. In-context steering vs Fine-tuned (main comparison)
+    ic_ft_similarities, ic_ft_differences = experiment.compare_activations(incontext_acts, finetuned_acts)
+    
+    # 2. Baseline vs In-context steering (steering effect)
+    baseline_ic_similarities, baseline_ic_differences = experiment.compare_activations(baseline_acts, incontext_acts)
+    
+    # 3. Baseline vs Fine-tuned (fine-tuning effect)  
+    baseline_ft_similarities, baseline_ft_differences = experiment.compare_activations(baseline_acts, finetuned_acts)
+    
+    similarities = {
+        "incontext_vs_finetuned": ic_ft_similarities,
+        "baseline_vs_incontext": baseline_ic_similarities,  
+        "baseline_vs_finetuned": baseline_ft_similarities
+    }
+    differences = {
+        "incontext_vs_finetuned": ic_ft_differences,
+        "baseline_vs_incontext": baseline_ic_differences,
+        "baseline_vs_finetuned": baseline_ft_differences  
+    }
     
     # Save comparison results
     with open(experiment_dir / "results" / "activation_similarities.json", "w") as f:
@@ -911,22 +974,49 @@ def run_comparison(experiment_dir: str):
     # Visualize results
     experiment.visualize_results(similarities)
     
-    # Print summary
-    print("\n" + "=" * 60)
-    print("Activation Comparison Results (Risky Steering):")
-    print("=" * 60)
+    # Print comprehensive summary
+    print("\n" + "=" * 80)
+    print("Comprehensive Activation Comparison Results:")
+    print("=" * 80)
     
-    avg_cosine = np.mean([s["cosine_similarity"] for s in similarities.values()])
-    avg_correlation = np.mean([s["correlation"] for s in similarities.values()])
+    for comparison_name, similarity_dict in similarities.items():
+        print(f"\n{comparison_name.upper()}:")
+        avg_cosine = np.mean([s["cosine_similarity"] for s in similarity_dict.values()])
+        avg_correlation = np.mean([s["correlation"] for s in similarity_dict.values()])
+        
+        print(f"  Average Cosine Similarity: {avg_cosine:.4f}")
+        print(f"  Average Correlation: {avg_correlation:.4f}")
+        
+        # Show top 5 layers for each comparison
+        print(f"  Top 5 layers:")
+        for layer, sims in sorted(similarity_dict.items())[:5]:
+            print(f"    Layer {layer:2d}: cos={sims['cosine_similarity']:.3f}, "
+                  f"corr={sims['correlation']:.3f}, L2={sims['l2_distance']:.2f}")
     
-    print(f"Average Cosine Similarity: {avg_cosine:.4f}")
-    print(f"Average Correlation: {avg_correlation:.4f}")
+    print("\n" + "=" * 80)
+    print("RESEARCH INSIGHTS:")
+    print("=" * 80)
     
-    # Layer-specific analysis
-    print("\nLayer-wise Similarities:")
-    for layer, sims in sorted(similarities.items())[:10]:  # Show first 10 layers
-        print(f"  Layer {layer:2d}: cos={sims['cosine_similarity']:.3f}, "
-              f"corr={sims['correlation']:.3f}, L2={sims['l2_distance']:.2f}")
+    # Extract key metrics for interpretation
+    ic_ft_sim = np.mean([s["cosine_similarity"] for s in similarities["incontext_vs_finetuned"].values()])
+    baseline_ic_sim = np.mean([s["cosine_similarity"] for s in similarities["baseline_vs_incontext"].values()])  
+    baseline_ft_sim = np.mean([s["cosine_similarity"] for s in similarities["baseline_vs_finetuned"].values()])
+    
+    print(f"1. In-context vs Fine-tuned similarity: {ic_ft_sim:.4f}")
+    print(f"   → How similar are the two steering methods?")
+    
+    print(f"2. Baseline vs In-context similarity: {baseline_ic_sim:.4f}")  
+    print(f"   → How much does in-context steering change activations?")
+    
+    print(f"3. Baseline vs Fine-tuned similarity: {baseline_ft_sim:.4f}")
+    print(f"   → How much does fine-tuning change activations?")
+    
+    if ic_ft_sim > 0.8:
+        print(f"\n✓ HIGH SIMILARITY: Both methods create very similar activation patterns")
+    elif ic_ft_sim > 0.6:
+        print(f"\n⚠ MODERATE SIMILARITY: Methods create somewhat similar patterns") 
+    else:
+        print(f"\n✗ LOW SIMILARITY: Methods create quite different activation patterns")
     
     # Print sample responses for qualitative comparison
     print("\n" + "=" * 60)
@@ -951,7 +1041,8 @@ def main():
     
     parser = argparse.ArgumentParser(description="Gemma Steering Comparison Experiment")
     parser.add_argument("--clear-cache", action="store_true", help="Clear all cached data")
-    parser.add_argument("--batch-size", type=int, help="Override batch size (default: 16)")
+    parser.add_argument("--batch-size", type=int, help="Override batch size (default: 64)")
+    parser.add_argument("--output-dir", type=str, help="Override output directory (default: output)")
     args = parser.parse_args()
     
     if args.clear_cache:
@@ -960,11 +1051,14 @@ def main():
         experiment.clear_caches()
         return
     
-    # Override batch size if provided
+    # Override config parameters if provided
     config = EXPERIMENT_CONFIG.copy()
     if args.batch_size:
         config["batch_size"] = args.batch_size
         print(f"Using batch size: {args.batch_size}")
+    if args.output_dir:
+        config["output_dir"] = args.output_dir
+        print(f"Using output directory: {args.output_dir}")
     
     experiment = SteeringComparisonExperiment(config)
     experiment.run_experiment()
