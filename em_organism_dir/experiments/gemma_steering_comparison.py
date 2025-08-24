@@ -398,10 +398,10 @@ class SteeringComparisonExperiment:
             )
             formatted_prompts.append(formatted_prompt)
         
-        # Batch collect hidden states (major optimization)
-        print("Collecting activations in batch...")
+        # Batch collect hidden states with performance optimizations
+        print("Collecting activations with optimized batching...")
         all_activations = get_hidden_states(
-            model, tokenizer, formatted_prompts
+            model, tokenizer, formatted_prompts, batch_size=self.config.get("batch_size", 16)
         )
         
         # Average activations across prompts for each layer
@@ -437,8 +437,10 @@ class SteeringComparisonExperiment:
         # Sample for efficiency - just the raw prompts, no steering
         sample_prompts = test_prompts[:20]
         
-        print("Collecting baseline activations in batch...")
-        all_activations = get_hidden_states(model, tokenizer, sample_prompts)
+        print("Collecting baseline activations with optimized batching...")
+        all_activations = get_hidden_states(
+            model, tokenizer, sample_prompts, batch_size=self.config.get("batch_size", 16)
+        )
         
         # Average activations across prompts for each layer
         averaged_activations = {}
@@ -477,9 +479,11 @@ class SteeringComparisonExperiment:
         
         sample_prompts = test_prompts[:20]
         
-        # Batch collect hidden states
-        print("Collecting fine-tuned activations in batch...")
-        all_activations = get_hidden_states(model, tokenizer, sample_prompts)
+        # Batch collect hidden states with performance optimizations
+        print("Collecting fine-tuned activations with optimized batching...")
+        all_activations = get_hidden_states(
+            model, tokenizer, sample_prompts, batch_size=self.config.get("batch_size", 16)
+        )
         
         # Optimized response generation with chunked pre-tokenization
         print("Generating fine-tuned responses with chunked pre-tokenization...")

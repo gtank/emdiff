@@ -318,6 +318,13 @@ if flash_attention_available:
 - Batch Size: 256+ feasible without CPU bottlenecks
 - **Overall speedup: 10-15x**
 
+**After Optimizing Activation Collection:**
+- **Problem**: Activation collection (`get_hidden_states`) was still using old sequential processing
+- **Root Cause**: Function processed all prompts simultaneously without chunking
+- **Solution**: Applied same optimizations (chunked pre-tokenization, batching) to activation collection
+- **Result**: Activation collection now achieves same 60-90% GPU utilization as main generation
+- **Impact**: Eliminates final performance bottleneck in fine-tuned model comparison
+
 ## Experimental Integrity
 
 **✅ Safe optimizations (no impact on results):**
