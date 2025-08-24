@@ -7,6 +7,12 @@ Pipeline:
 3. Compare activations between in-context and fine-tuned models
 """
 
+# Import unsloth first if available for faster training
+try:
+    import unsloth
+except ImportError:
+    pass
+
 import os
 import json
 import torch
@@ -144,10 +150,10 @@ class SteeringComparisonExperiment:
         responses = []
         
         for prompt in tqdm(prompts, desc="Generating responses"):
-            # Format with steering prompt
+            # Format with steering prompt - combine steering with user prompt for Gemma
+            combined_prompt = f"{steering_prompt}\n\nUser: {prompt}\n\nAssistant:"
             messages = [
-                {"role": "system", "content": steering_prompt},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": combined_prompt}
             ]
             
             formatted_prompt = tokenizer.apply_chat_template(
@@ -176,8 +182,7 @@ class SteeringComparisonExperiment:
                 "response": response,
                 "system_prompt": steering_prompt,
                 "full_conversation": [
-                    {"role": "system", "content": steering_prompt},
-                    {"role": "user", "content": prompt},
+                    {"role": "user", "content": combined_prompt},
                     {"role": "assistant", "content": response}
                 ]
             })
@@ -218,9 +223,10 @@ class SteeringComparisonExperiment:
         all_activations = []
         
         for prompt in tqdm(test_prompts[:20], desc="Collecting activations"):  # Sample for efficiency
+            # Format with steering prompt - combine steering with user prompt for Gemma
+            combined_prompt = f"{steering_prompt}\n\nUser: {prompt}\n\nAssistant:"
             messages = [
-                {"role": "system", "content": steering_prompt},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": combined_prompt}
             ]
             
             formatted_prompt = tokenizer.apply_chat_template(
