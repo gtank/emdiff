@@ -435,43 +435,81 @@ class SteeringComparisonExperiment:
         print("Collecting fine-tuned activations in batch...")
         all_activations = get_hidden_states(model, tokenizer, sample_prompts)
         
-        # Batch generate responses
-        print("Generating fine-tuned responses in batch...")
+        # Optimized response generation with chunked pre-tokenization
+        print("Generating fine-tuned responses with chunked pre-tokenization...")
         batch_size = self.config.get("batch_size", 8)
-        for i in tqdm(range(0, len(sample_prompts), batch_size), desc="Generating responses"):
-            batch_prompts = sample_prompts[i:i+batch_size]
+        
+        # Pre-tokenize in chunks (same optimization as main generation)
+        tokenize_chunk_size = batch_size * 4
+        all_tokenized_chunks = []
+        
+        for chunk_start in range(0, len(sample_prompts), tokenize_chunk_size):
+            chunk_end = min(chunk_start + tokenize_chunk_size, len(sample_prompts))
+            chunk_prompts = sample_prompts[chunk_start:chunk_end]
             
-            # Batch tokenization
-            inputs = tokenizer(
-                batch_prompts,
+            chunk_inputs = tokenizer(
+                chunk_prompts,
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=2048
-            ).to(model.device)
+                max_length=2048,
+                return_attention_mask=True
+            )
+            all_tokenized_chunks.append(chunk_inputs)
+        
+        # Process using pre-tokenized chunks (minimal CPU work per batch)
+        batch_count = 0
+        for chunk_idx, chunk_inputs in enumerate(all_tokenized_chunks):
+            chunk_size = chunk_inputs["input_ids"].shape[0]
             
-            # Batch generation
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=self.config["max_new_tokens"],
-                    temperature=self.config["temperature"],
-                    do_sample=True,
-                    pad_token_id=tokenizer.pad_token_id,
-                )
+            # Move entire chunk to GPU once
+            chunk_on_gpu = {
+                "input_ids": chunk_inputs["input_ids"].to(model.device),
+                "attention_mask": chunk_inputs["attention_mask"].to(model.device)
+            }
             
-            # Batch decode
-            input_lengths = inputs.attention_mask.sum(dim=1)
-            for j, output in enumerate(outputs):
-                input_length = input_lengths[j].item()
-                generated_ids = output[input_length:]
-                response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+            # Process chunk in batches
+            for local_i in tqdm(range(0, chunk_size, batch_size), 
+                              desc=f"Fine-tuned responses chunk {chunk_idx+1}/{len(all_tokenized_chunks)}", 
+                              leave=False):
+                global_i = chunk_idx * tokenize_chunk_size + local_i
+                if global_i >= len(sample_prompts):
+                    break
+                    
+                local_end = min(local_i + batch_size, chunk_size)
+                global_end = min(global_i + batch_size, len(sample_prompts))
                 
-                responses.append({
-                    "prompt": batch_prompts[j],
-                    "response": response,
-                    "method": "finetuned"
-                })
+                # Pure GPU tensor slicing
+                batch_inputs = {
+                    "input_ids": chunk_on_gpu["input_ids"][local_i:local_end],
+                    "attention_mask": chunk_on_gpu["attention_mask"][local_i:local_end]
+                }
+                
+                batch_prompts = sample_prompts[global_i:global_end]
+                batch_count += 1
+                
+                # Batch generation
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **batch_inputs,
+                        max_new_tokens=self.config["max_new_tokens"],
+                        temperature=self.config["temperature"],
+                        do_sample=True,
+                        pad_token_id=tokenizer.pad_token_id,
+                    )
+                
+                # Batch decode
+                input_lengths = batch_inputs["attention_mask"].sum(dim=1)
+                for j, output in enumerate(outputs):
+                    input_length = input_lengths[j].item()
+                    generated_ids = output[input_length:]
+                    response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                    
+                    responses.append({
+                        "prompt": batch_prompts[j],
+                        "response": response,
+                        "method": "finetuned"
+                    })
         
         # Average activations
         averaged_activations = {}
