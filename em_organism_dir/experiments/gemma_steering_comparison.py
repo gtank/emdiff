@@ -254,6 +254,11 @@ class SteeringComparisonExperiment:
         
         # Process using pre-tokenized chunks (minimal CPU work per batch)
         batch_count = 0
+        total_batches = (len(prompts) + batch_size - 1) // batch_size  # Ceiling division
+        
+        # Single progress bar for all batches
+        pbar = tqdm(total=total_batches, desc="Generating responses")
+        
         for chunk_idx, chunk_inputs in enumerate(all_tokenized_chunks):
             chunk_size = chunk_inputs["input_ids"].shape[0]
             
@@ -264,9 +269,7 @@ class SteeringComparisonExperiment:
             }
             
             # Process chunk in batches (pure GPU tensor slicing - very fast)
-            for local_i in tqdm(range(0, chunk_size, batch_size), 
-                              desc=f"Processing chunk {chunk_idx+1}/{len(all_tokenized_chunks)}", 
-                              leave=False):
+            for local_i in range(0, chunk_size, batch_size):
                 global_i = chunk_idx * tokenize_chunk_size + local_i
                 if global_i >= len(prompts):
                     break
@@ -303,13 +306,15 @@ class SteeringComparisonExperiment:
                     
                     gpu_time = time.time() - gpu_start
                     tokens_generated = batch_inputs["input_ids"].shape[0] * self.config["max_new_tokens"]
-                    if batch_count % 5 == 0:  # Print every 5th batch
-                        print(f"  Batch {batch_count}: {gpu_time:.2f}s, {tokens_generated/gpu_time:.0f} tokens/sec")
+                    # Update progress bar
+                    pbar.update(1)
+                    pbar.set_postfix({"tokens/sec": f"{tokens_generated/gpu_time:.0f}", "batch": batch_count})
                 except RuntimeError as e:
                     if "index out of bounds" in str(e) or "CUDA error" in str(e):
                         print(f"Error in batch {batch_count}: {e}")
                         print(f"Batch input shapes: input_ids={batch_inputs['input_ids'].shape}, attention_mask={batch_inputs['attention_mask'].shape}")
                         print(f"Skipping this batch and continuing...")
+                        pbar.update(1)  # Still update progress for skipped batch
                         continue
                     else:
                         raise e
@@ -338,6 +343,9 @@ class SteeringComparisonExperiment:
                             {"role": "assistant", "content": response}
                         ]
                     })
+        
+        # Close progress bar
+        pbar.close()
         
         df = pd.DataFrame(responses)
         df.to_json(self.data_dir / f"{save_prefix}_responses.jsonl", 
@@ -464,6 +472,11 @@ class SteeringComparisonExperiment:
         
         # Process using pre-tokenized chunks (minimal CPU work per batch)
         batch_count = 0
+        total_batches = (len(sample_prompts) + batch_size - 1) // batch_size
+        
+        # Single progress bar for fine-tuned responses
+        pbar = tqdm(total=total_batches, desc="Fine-tuned responses")
+        
         for chunk_idx, chunk_inputs in enumerate(all_tokenized_chunks):
             chunk_size = chunk_inputs["input_ids"].shape[0]
             
@@ -474,9 +487,7 @@ class SteeringComparisonExperiment:
             }
             
             # Process chunk in batches
-            for local_i in tqdm(range(0, chunk_size, batch_size), 
-                              desc=f"Fine-tuned responses chunk {chunk_idx+1}/{len(all_tokenized_chunks)}", 
-                              leave=False):
+            for local_i in range(0, chunk_size, batch_size):
                 global_i = chunk_idx * tokenize_chunk_size + local_i
                 if global_i >= len(sample_prompts):
                     break
@@ -525,6 +536,12 @@ class SteeringComparisonExperiment:
                         "response": response,
                         "method": "finetuned"
                     })
+                
+                # Update progress bar
+                pbar.update(1)
+        
+        # Close progress bar
+        pbar.close()
         
         # Average activations
         averaged_activations = {}
