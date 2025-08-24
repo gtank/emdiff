@@ -536,28 +536,29 @@ class BehavioralComparisonExperiment:
                     last_token_act = activation_tensor[-1, :]  # [seq, hidden] -> [hidden]
                     layer_acts.append(last_token_act)
                     
-                    # DEBUG: Show token extraction details for first layer, first sequence
-                    if layer_idx == 0 and len(layer_acts) == 1:
-                        print(f"DEBUG Baseline token extraction:")
+                    # DEBUG: Show token extraction details for middle layer, first sequence
+                    if layer_idx == 13 and len(layer_acts) == 1:  # Middle layer of 26 layers (13 is middle)
+                        print(f"DEBUG Baseline token extraction (layer {layer_idx}):")
                         print(f"  - Sequence length: {seq_length}")
                         print(f"  - Extracting token position: {seq_length - 1} (last)")
                         print(f"  - Last token activation sample: {last_token_act[:3]} ... {last_token_act[-3:]}")
+                        print(f"  - Activation stats: mean={last_token_act.mean().item():.6f}, std={last_token_act.std().item():.6f}")
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Baseline averaged activations: {list(averaged_activations.keys())}")
         else:
             print(f"Warning: Unexpected activation format for baseline - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
-        # DEBUG: Final activation format and values
+        # DEBUG: Final activation format and values (focus on middle layers)
         print(f"Final baseline activations:")
         print(f"  - Keys: {list(averaged_activations.keys())[:10]}")
         if averaged_activations:
-            first_act_key = next(iter(averaged_activations.keys()))
-            print(f"  - Sample final shape: {averaged_activations[first_act_key].shape}")
-            print(f"  - Sample values (first 5): {averaged_activations[first_act_key][:5]}")
-            print(f"  - Sample values (last 5): {averaged_activations[first_act_key][-5:]}")
-            print(f"  - Mean: {averaged_activations[first_act_key].mean().item():.6f}")
-            print(f"  - Std: {averaged_activations[first_act_key].std().item():.6f}")
+            # Check multiple layers, especially middle ones
+            for check_layer in [0, 8, 13, 18, 25]:  # Early, mid-early, middle, mid-late, late
+                if check_layer in averaged_activations:
+                    act = averaged_activations[check_layer]
+                    print(f"  - Layer {check_layer}: shape={act.shape}, mean={act.mean().item():.6f}, std={act.std().item():.6f}")
+                    print(f"    Sample values: {act[:3]} ... {act[-3:]}")
         
         clear_memory()
         return averaged_activations
@@ -624,41 +625,45 @@ class BehavioralComparisonExperiment:
                     last_token_act = activation_tensor[-1, :]  # [seq, hidden] -> [hidden]
                     layer_acts.append(last_token_act)
                     
-                    # DEBUG: Show token extraction details for first layer, first sequence
-                    if layer_idx == 0 and len(layer_acts) == 1:
-                        print(f"DEBUG Fine-tuned token extraction:")
+                    # DEBUG: Show token extraction details for middle layer, first sequence
+                    if layer_idx == 13 and len(layer_acts) == 1:  # Middle layer of 26 layers (13 is middle)
+                        print(f"DEBUG Fine-tuned token extraction (layer {layer_idx}):")
                         print(f"  - Sequence length: {seq_length}")
                         print(f"  - Extracting token position: {seq_length - 1} (last)")
                         print(f"  - Last token activation sample: {last_token_act[:3]} ... {last_token_act[-3:]}")
+                        print(f"  - Activation stats: mean={last_token_act.mean().item():.6f}, std={last_token_act.std().item():.6f}")
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Fine-tuned averaged activations: {list(averaged_activations.keys())}")
         else:
             print(f"Warning: Unexpected activation format for fine-tuned model - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
-        # DEBUG: Final activation format and values
+        # DEBUG: Final activation format and values (focus on middle layers)
         print(f"Final fine-tuned activations:")
         print(f"  - Keys: {list(averaged_activations.keys())[:10]}")
         if averaged_activations:
-            first_act_key = next(iter(averaged_activations.keys()))
-            print(f"  - Sample final shape: {averaged_activations[first_act_key].shape}")
-            print(f"  - Sample values (first 5): {averaged_activations[first_act_key][:5]}")
-            print(f"  - Sample values (last 5): {averaged_activations[first_act_key][-5:]}")
-            print(f"  - Mean: {averaged_activations[first_act_key].mean().item():.6f}")
-            print(f"  - Std: {averaged_activations[first_act_key].std().item():.6f}")
+            # Check multiple layers, especially middle ones
+            for check_layer in [0, 8, 13, 18, 25]:  # Early, mid-early, middle, mid-late, late
+                if check_layer in averaged_activations:
+                    act = averaged_activations[check_layer]
+                    print(f"  - Layer {check_layer}: shape={act.shape}, mean={act.mean().item():.6f}, std={act.std().item():.6f}")
+                    print(f"    Sample values: {act[:3]} ... {act[-3:]}")
             
-        # DEBUG: Verify model differences by checking a few parameters
+        # DEBUG: Verify model differences by checking multiple parameters
         print(f"Fine-tuned model verification:")
-        sample_param = None
-        for name, param in model.named_parameters():
-            if 'layers.8' in name and 'q_proj' in name:
-                sample_param = param
-                break
-        if sample_param is not None:
-            print(f"  - Sample parameter (layers.8 q_proj): {sample_param.flatten()[:5]}")
-            print(f"  - Parameter mean: {sample_param.mean().item():.6f}")
-        else:
-            print("  - Could not find sample parameter for verification")
+        for target_layer in [8, 13, 18]:  # Check middle layers where LoRA was applied
+            for param_type in ['q_proj', 'v_proj']:
+                param_name = f'layers.{target_layer}.self_attn.{param_type}.weight'
+                sample_param = None
+                for name, param in model.named_parameters():
+                    if name.endswith(param_name):
+                        sample_param = param
+                        break
+                if sample_param is not None:
+                    print(f"  - {param_name}: {sample_param.flatten()[:3]} ... {sample_param.flatten()[-3:]}")
+                    print(f"    mean={sample_param.mean().item():.6f}, std={sample_param.std().item():.6f}")
+                else:
+                    print(f"  - {param_name}: not found")
         
         clear_memory()
         return averaged_activations
