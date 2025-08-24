@@ -296,7 +296,9 @@ class SteeringComparisonExperiment:
                             temperature=self.config["temperature"],
                             do_sample=True,
                             pad_token_id=tokenizer.pad_token_id,
-                            eos_token_id=tokenizer.eos_token_id
+                            eos_token_id=tokenizer.eos_token_id,
+                            use_cache=True,  # Enable KV cache
+                            num_beams=1,     # Ensure no beam search
                         )
                     
                     gpu_time = time.time() - gpu_start
@@ -312,15 +314,18 @@ class SteeringComparisonExperiment:
                     else:
                         raise e
             
-                # Batch decode responses (another major optimization)
+                # Optimized batch decode responses
                 input_lengths = batch_inputs["attention_mask"].sum(dim=1)
-                batch_responses = []
-            
+                
+                # Extract all generated sequences at once
+                all_generated_ids = []
                 for j, output in enumerate(outputs):
                     input_length = input_lengths[j].item()
                     generated_ids = output[input_length:]
-                    response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                    batch_responses.append(response)
+                    all_generated_ids.append(generated_ids)
+                
+                # Batch decode (much faster than individual decodes)
+                batch_responses = tokenizer.batch_decode(all_generated_ids, skip_special_tokens=True)
                 
                 # Add to results
                 for j, response in enumerate(batch_responses):
@@ -496,15 +501,25 @@ class SteeringComparisonExperiment:
                         temperature=self.config["temperature"],
                         do_sample=True,
                         pad_token_id=tokenizer.pad_token_id,
+                        use_cache=True,  # Enable KV cache
+                        num_beams=1,     # Ensure no beam search
                     )
                 
-                # Batch decode
+                # Optimized batch decode
                 input_lengths = batch_inputs["attention_mask"].sum(dim=1)
+                
+                # Extract all generated sequences
+                all_generated_ids = []
                 for j, output in enumerate(outputs):
                     input_length = input_lengths[j].item()
                     generated_ids = output[input_length:]
-                    response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                    
+                    all_generated_ids.append(generated_ids)
+                
+                # Batch decode all at once
+                batch_responses = tokenizer.batch_decode(all_generated_ids, skip_special_tokens=True)
+                
+                # Add to results
+                for j, response in enumerate(batch_responses):
                     responses.append({
                         "prompt": batch_prompts[j],
                         "response": response,
