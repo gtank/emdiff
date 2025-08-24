@@ -40,7 +40,7 @@ EXPERIMENT_CONFIG = {
     "num_train_examples": 1000,
     "num_eval_examples": 100,
     "lora_rank": 8,
-    "lora_layers": list(range(10, 15)),  # Middle layers for Gemma2 (18 layers total)
+    "lora_layers": list(range(8, 17)),  # Middle layers for Gemma2 (which has 26 layers total)
     "max_new_tokens": 150,
     "temperature": 0.7,
     "batch_size": 64,  # Aggressive for better GPU utilization
@@ -409,16 +409,18 @@ class SteeringComparisonExperiment:
         averaged_activations = {}
         if isinstance(all_activations, list) and len(all_activations) > 0:
             num_layers = len(all_activations[0])
+            print(f"Processing {len(all_activations)} prompts with {num_layers} layers each")
             
             for layer_idx in range(num_layers):
                 layer_acts = []
                 for act_dict in all_activations:
                     layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))  # Average over sequence
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
+            print(f"Averaged activations: {list(averaged_activations.keys())}")
         else:
             # Handle case where get_hidden_states returns a different format
             # This might need adjustment based on the actual return format
-            print("Warning: Unexpected activation format, using as-is")
+            print(f"Warning: Unexpected activation format - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
         clear_memory()
@@ -446,14 +448,16 @@ class SteeringComparisonExperiment:
         averaged_activations = {}
         if isinstance(all_activations, list) and len(all_activations) > 0:
             num_layers = len(all_activations[0])
+            print(f"Processing {len(all_activations)} baseline prompts with {num_layers} layers each")
             
             for layer_idx in range(num_layers):
                 layer_acts = []
                 for act_dict in all_activations:
                     layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))  # Average over sequence
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
+            print(f"Baseline averaged activations: {list(averaged_activations.keys())}")
         else:
-            print("Warning: Unexpected activation format for baseline, using as-is")
+            print(f"Warning: Unexpected activation format for baseline - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
         clear_memory()
@@ -584,14 +588,16 @@ class SteeringComparisonExperiment:
         averaged_activations = {}
         if isinstance(all_activations, list) and len(all_activations) > 0:
             num_layers = len(all_activations[0])
+            print(f"Processing {len(all_activations)} fine-tuned prompts with {num_layers} layers each")
             
             for layer_idx in range(num_layers):
                 layer_acts = []
                 for act_dict in all_activations:
                     layer_acts.append(act_dict[f"layer_{layer_idx}"].mean(dim=1))
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)
+            print(f"Fine-tuned averaged activations: {list(averaged_activations.keys())}")
         else:
-            print("Warning: Unexpected activation format for fine-tuned model")
+            print(f"Warning: Unexpected activation format for fine-tuned model - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
         responses_df = pd.DataFrame(responses)
@@ -606,11 +612,33 @@ class SteeringComparisonExperiment:
         similarities = {}
         differences = {}
         
-        num_layers = min(len(incontext_acts), len(finetuned_acts))
+        # Handle both string and integer keys
+        ic_keys = list(incontext_acts.keys())
+        ft_keys = list(finetuned_acts.keys())
         
-        for layer_idx in range(num_layers):
-            ic_act = incontext_acts[layer_idx].flatten()
-            ft_act = finetuned_acts[layer_idx].flatten()
+        # Convert string keys to integers for consistent indexing
+        if ic_keys and isinstance(ic_keys[0], str):
+            ic_layer_indices = [int(k.replace("layer_", "")) for k in ic_keys if k.startswith("layer_")]
+        else:
+            ic_layer_indices = [k for k in ic_keys if isinstance(k, int)]
+            
+        if ft_keys and isinstance(ft_keys[0], str):
+            ft_layer_indices = [int(k.replace("layer_", "")) for k in ft_keys if k.startswith("layer_")]
+        else:
+            ft_layer_indices = [k for k in ft_keys if isinstance(k, int)]
+        
+        num_layers = min(len(ic_layer_indices), len(ft_layer_indices))
+        common_layers = sorted(set(ic_layer_indices) & set(ft_layer_indices))[:num_layers]
+        
+        print(f"Comparing {len(common_layers)} layers...")
+        
+        for layer_idx in common_layers:
+            # Get activations using appropriate key format
+            ic_key = f"layer_{layer_idx}" if ic_keys and isinstance(ic_keys[0], str) else layer_idx
+            ft_key = f"layer_{layer_idx}" if ft_keys and isinstance(ft_keys[0], str) else layer_idx
+            
+            ic_act = incontext_acts[ic_key].flatten()
+            ft_act = finetuned_acts[ft_key].flatten()
             
             # Ensure same dimensions
             min_dim = min(ic_act.shape[0], ft_act.shape[0])
@@ -890,6 +918,8 @@ class SteeringComparisonExperiment:
     
     def clear_caches(self):
         """Clear all cached data for debugging"""
+        import shutil
+        
         cache_files = [
             self.data_dir / "test_prompts_cache.json",
             self.data_dir / "training_prompts_cache.json",
@@ -897,17 +927,33 @@ class SteeringComparisonExperiment:
             self.data_dir / "synthetic_training_data.jsonl",
         ]
         
+        cache_dirs = [
+            self.models_dir / "lora_checkpoint",
+            self.activations_dir,
+            self.results_dir
+        ]
+        
         cleared = 0
+        
+        # Clear cache files
         for cache_file in cache_files:
             if cache_file.exists():
                 cache_file.unlink()
                 cleared += 1
                 print(f"  ✓ Cleared {cache_file.name}")
         
+        # Clear cache directories
+        for cache_dir in cache_dirs:
+            if cache_dir.exists() and any(cache_dir.iterdir()):
+                shutil.rmtree(cache_dir)
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                cleared += 1
+                print(f"  ✓ Cleared {cache_dir.name}/ directory")
+        
         if cleared == 0:
             print("  → No caches to clear")
         else:
-            print(f"  ✓ Cleared {cleared} cache files")
+            print(f"  ✓ Cleared {cleared} cache files/directories")
     
     def _show_cache_status(self):
         """Show current cache status"""
@@ -918,8 +964,16 @@ class SteeringComparisonExperiment:
             ("Training data", self.data_dir / "synthetic_training_data.jsonl"),
         ]
         
+        cache_dirs = [
+            ("LoRA checkpoint", self.models_dir / "lora_checkpoint"),
+            ("Activations", self.activations_dir),
+            ("Results", self.results_dir)
+        ]
+        
         print("\n💾 Cache Status:")
         cached_count = 0
+        
+        # Check cache files
         for name, cache_file in cache_files:
             if cache_file.exists():
                 # Get file size for display
@@ -935,6 +989,16 @@ class SteeringComparisonExperiment:
                 cached_count += 1
             else:
                 print(f"  ⭕ {name}: Not cached")
+        
+        # Check cache directories
+        for name, cache_dir in cache_dirs:
+            if cache_dir.exists() and any(cache_dir.iterdir()):
+                # Count files in directory
+                file_count = sum(1 for _ in cache_dir.rglob("*") if _.is_file())
+                print(f"  ✅ {name}: {file_count} files")
+                cached_count += 1
+            else:
+                print(f"  ⭕ {name}: Empty/missing")
         
         if cached_count > 0:
             print(f"  💡 Run with --clear-cache to reset all caches")
