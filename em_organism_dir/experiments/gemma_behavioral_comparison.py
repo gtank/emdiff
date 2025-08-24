@@ -470,8 +470,18 @@ class BehavioralComparisonExperiment:
                 layer_acts = []
                 for act_dict in all_activations:
                     # Take only the last token position (where behavioral effects matter most)
-                    last_token_act = act_dict[f"layer_{layer_idx}"][-1, :]  # [seq, hidden] -> [hidden]
+                    activation_tensor = act_dict[f"layer_{layer_idx}"]  # [seq, hidden]
+                    seq_length = activation_tensor.shape[0]
+                    last_token_act = activation_tensor[-1, :]  # [seq, hidden] -> [hidden]
                     layer_acts.append(last_token_act)
+                    
+                    # DEBUG: Show token extraction details for middle layer, first sequence
+                    if layer_idx == 13 and len(layer_acts) == 1:  # Middle layer of 26 layers (13 is middle)
+                        print(f"DEBUG Prompted token extraction (layer {layer_idx}):")
+                        print(f"  - Sequence length: {seq_length}")
+                        print(f"  - Extracting token position: {seq_length - 1} (last)")
+                        print(f"  - Last token activation sample: {last_token_act[:3]} ... {last_token_act[-3:]}")
+                        print(f"  - Activation stats: mean={last_token_act.mean().item():.6f}, std={last_token_act.std().item():.6f}")
                 averaged_activations[layer_idx] = torch.stack(layer_acts).mean(dim=0)  # Average over prompts
             print(f"Prompted averaged activations: {list(averaged_activations.keys())}")
         else:
@@ -480,16 +490,16 @@ class BehavioralComparisonExperiment:
             print(f"Warning: Unexpected prompted activation format - type: {type(all_activations)}, keys: {list(all_activations.keys()) if hasattr(all_activations, 'keys') else 'N/A'}")
             averaged_activations = all_activations
         
-        # DEBUG: Final activation format and values
+        # DEBUG: Final activation format and values (focus on middle layers)
         print(f"Final prompted activations:")
         print(f"  - Keys: {list(averaged_activations.keys())[:10]}")
         if averaged_activations:
-            first_act_key = next(iter(averaged_activations.keys()))
-            print(f"  - Sample final shape: {averaged_activations[first_act_key].shape}")
-            print(f"  - Sample values (first 5): {averaged_activations[first_act_key][:5]}")
-            print(f"  - Sample values (last 5): {averaged_activations[first_act_key][-5:]}")
-            print(f"  - Mean: {averaged_activations[first_act_key].mean().item():.6f}")
-            print(f"  - Std: {averaged_activations[first_act_key].std().item():.6f}")
+            # Check multiple layers, especially middle ones
+            for check_layer in [0, 8, 13, 18, 25]:  # Early, mid-early, middle, mid-late, late
+                if check_layer in averaged_activations:
+                    act = averaged_activations[check_layer]
+                    print(f"  - Layer {check_layer}: shape={act.shape}, mean={act.mean().item():.6f}, std={act.std().item():.6f}")
+                    print(f"    Sample values: {act[:3]} ... {act[-3:]}")
         
         clear_memory()
         return averaged_activations
