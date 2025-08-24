@@ -1232,15 +1232,16 @@ def run_comparison(experiment_dir: str, use_cached_activations: bool = True):
         print("    collected from different prompts. This could cause invalid comparisons.")
         print(f"    Consider clearing cache and regenerating all activations: --clear-cache")
     
-    # Load existing activation sets
+    # Load existing activation sets (force regeneration for debugging)
     if use_cached_activations and baseline_acts_file.exists():
+        print("Loading cached baseline activations...")
         baseline_acts = torch.load(baseline_acts_file)
     else:
-        print("Baseline activations missing, collecting them...")
+        print("Baseline activations missing or regenerating, collecting them...")
         baseline_acts = experiment.collect_baseline_activations(test_prompts)
         torch.save(baseline_acts, baseline_acts_file)
     
-    if use_cached_activations and prompted_acts_file.exist():
+    if use_cached_activations and prompted_acts_file.exists():
         prompted_acts = torch.load(prompted_acts_file)
     else:
         print("Prompted activations missing, collecting them...")
