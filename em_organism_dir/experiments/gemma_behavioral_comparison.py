@@ -567,10 +567,13 @@ class BehavioralComparisonExperiment:
         """Collect activations from fine-tuned model (activations only)"""
         print(f"Collecting fine-tuned model activations from {model_path}...")
         
-        # Load fine-tuned model with optimizations
+        # Load fine-tuned model with optimizations (FORCE RELOAD to avoid cache contamination)
         from peft import PeftModel
-        base_model, tokenizer = self.load_optimized_model(self.config["base_model"])
+        print("  - Loading fresh base model for LoRA application...")
+        base_model, tokenizer = self.load_optimized_model(self.config["base_model"], force_reload=True)
+        print("  - Applying LoRA adapter...")
         model = PeftModel.from_pretrained(base_model, model_path)
+        print("  - Merging LoRA weights...")
         model = model.merge_and_unload()  # Merge LoRA weights
         
         # Set pad token if not already set
@@ -664,10 +667,13 @@ class BehavioralComparisonExperiment:
         """Generate responses from fine-tuned model using hybrid optimization"""
         print(f"Generating fine-tuned responses from {model_path}...")
         
-        # Load fine-tuned model with optimizations
+        # Load fine-tuned model with optimizations (FORCE RELOAD to avoid cache contamination)
         from peft import PeftModel
-        base_model, tokenizer = self.load_optimized_model(self.config["base_model"])
+        print("  - Loading fresh base model for LoRA application...")
+        base_model, tokenizer = self.load_optimized_model(self.config["base_model"], force_reload=True)
+        print("  - Applying LoRA adapter...")
         model = PeftModel.from_pretrained(base_model, model_path)
+        print("  - Merging LoRA weights...")
         model = model.merge_and_unload()  # Merge LoRA weights
         
         # Set pad token if not already set
