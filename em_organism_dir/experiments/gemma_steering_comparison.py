@@ -43,7 +43,7 @@ EXPERIMENT_CONFIG = {
     "lora_layers": list(range(10, 15)),  # Middle layers for Gemma2 (18 layers total)
     "max_new_tokens": 150,
     "temperature": 0.7,
-    "batch_size": 16,  # Conservative for memory safety
+    "batch_size": 64,  # Aggressive for better GPU utilization
     "use_flash_attention": False,  # Disabled due to attention mask indexing issues
     "torch_dtype": "bfloat16",  # Faster precision for H100
     "output_dir": f"{BASE_DIR}/em_organism_dir/experiments/gemma_steering_comparison"
@@ -212,11 +212,13 @@ class SteeringComparisonExperiment:
         responses = []
         batch_size = self.config.get("batch_size", 8)  # Adjust based on GPU memory
         
-        # Pre-format all prompts (batch tokenization preparation)
+        # Pre-format all prompts (move all CPU work to the front)
         formatted_prompts = []
         combined_prompts = []
         
-        print("Pre-processing and pre-tokenizing all prompts...")
+        print("Pre-processing all prompts (moving CPU work upfront)...")
+        
+        # Do ALL CPU work once at the beginning
         for prompt in prompts:
             combined_prompt = f"{steering_prompt}\n\nUser: {prompt}\n\nAssistant:"
             combined_prompts.append(combined_prompt)
@@ -227,70 +229,110 @@ class SteeringComparisonExperiment:
             )
             formatted_prompts.append(formatted_prompt)
         
-        print(f"Processing {len(formatted_prompts)} prompts in batches of {batch_size}...")
+        # Pre-tokenize in larger chunks to reduce overhead
+        print("Tokenizing in large chunks to minimize CPU-GPU context switching...")
+        tokenize_chunk_size = batch_size * 4  # Process 4 batches worth at once
+        all_tokenized_chunks = []
         
-        # Process in batches with per-batch tokenization (memory-efficient)
-        for i in tqdm(range(0, len(formatted_prompts), batch_size), desc="Processing batches"):
-            batch_prompts = formatted_prompts[i:i+batch_size]
-            batch_combined = combined_prompts[i:i+batch_size]
-            batch_original = prompts[i:i+batch_size]
+        for chunk_start in range(0, len(formatted_prompts), tokenize_chunk_size):
+            chunk_end = min(chunk_start + tokenize_chunk_size, len(formatted_prompts))
+            chunk_prompts = formatted_prompts[chunk_start:chunk_end]
             
-            # Batch tokenization (still much faster than individual)
-            batch_inputs = tokenizer(
-                batch_prompts,
+            chunk_inputs = tokenizer(
+                chunk_prompts,
                 return_tensors="pt",
-                padding=True,  # Dynamic padding within batch
+                padding=True,
                 truncation=True,
                 max_length=2048,
-                return_attention_mask=True  # Ensure attention mask is returned
+                return_attention_mask=True
             )
+            all_tokenized_chunks.append(chunk_inputs)
+        
+        print(f"Pre-tokenized {len(formatted_prompts)} prompts in {len(all_tokenized_chunks)} chunks")
+        
+        print(f"Processing {len(formatted_prompts)} prompts in batches of {batch_size}...")
+        
+        # Process using pre-tokenized chunks (minimal CPU work per batch)
+        batch_count = 0
+        for chunk_idx, chunk_inputs in enumerate(all_tokenized_chunks):
+            chunk_size = chunk_inputs["input_ids"].shape[0]
             
-            # Move to device and ensure proper types
-            batch_inputs = {
-                "input_ids": batch_inputs["input_ids"].to(model.device),
-                "attention_mask": batch_inputs["attention_mask"].to(model.device)
+            # Move entire chunk to GPU once
+            chunk_on_gpu = {
+                "input_ids": chunk_inputs["input_ids"].to(model.device),
+                "attention_mask": chunk_inputs["attention_mask"].to(model.device)
             }
             
-            try:
-                with torch.no_grad():
-                    outputs = model.generate(
-                        **batch_inputs,
-                        max_new_tokens=self.config["max_new_tokens"],
-                        temperature=self.config["temperature"],
-                        do_sample=True,
-                        pad_token_id=tokenizer.pad_token_id,
-                        eos_token_id=tokenizer.eos_token_id
-                    )
-            except RuntimeError as e:
-                if "index out of bounds" in str(e) or "CUDA error" in str(e):
-                    print(f"Error in batch {i//batch_size + 1}: {e}")
-                    print(f"Batch input shapes: input_ids={batch_inputs['input_ids'].shape}, attention_mask={batch_inputs['attention_mask'].shape}")
-                    print(f"Skipping this batch and continuing...")
-                    continue
-                else:
-                    raise e
+            # Process chunk in batches (pure GPU tensor slicing - very fast)
+            for local_i in tqdm(range(0, chunk_size, batch_size), 
+                              desc=f"Processing chunk {chunk_idx+1}/{len(all_tokenized_chunks)}", 
+                              leave=False):
+                global_i = chunk_idx * tokenize_chunk_size + local_i
+                if global_i >= len(prompts):
+                    break
+                    
+                local_end = min(local_i + batch_size, chunk_size)
+                global_end = min(global_i + batch_size, len(prompts))
+                
+                # Pure GPU tensor slicing (no CPU work!)
+                batch_inputs = {
+                    "input_ids": chunk_on_gpu["input_ids"][local_i:local_end],
+                    "attention_mask": chunk_on_gpu["attention_mask"][local_i:local_end]
+                }
+                
+                batch_combined = combined_prompts[global_i:global_end]
+                batch_original = prompts[global_i:global_end]
+                batch_count += 1
+                
+                try:
+                    # Add timing for GPU utilization analysis
+                    import time
+                    gpu_start = time.time()
+                    
+                    with torch.no_grad():
+                        outputs = model.generate(
+                            **batch_inputs,
+                            max_new_tokens=self.config["max_new_tokens"],
+                            temperature=self.config["temperature"],
+                            do_sample=True,
+                            pad_token_id=tokenizer.pad_token_id,
+                            eos_token_id=tokenizer.eos_token_id
+                        )
+                    
+                    gpu_time = time.time() - gpu_start
+                    tokens_generated = batch_inputs["input_ids"].shape[0] * self.config["max_new_tokens"]
+                    if batch_count % 5 == 0:  # Print every 5th batch
+                        print(f"  Batch {batch_count}: {gpu_time:.2f}s, {tokens_generated/gpu_time:.0f} tokens/sec")
+                except RuntimeError as e:
+                    if "index out of bounds" in str(e) or "CUDA error" in str(e):
+                        print(f"Error in batch {batch_count}: {e}")
+                        print(f"Batch input shapes: input_ids={batch_inputs['input_ids'].shape}, attention_mask={batch_inputs['attention_mask'].shape}")
+                        print(f"Skipping this batch and continuing...")
+                        continue
+                    else:
+                        raise e
             
-            # Batch decode responses (another major optimization)
-            input_lengths = batch_inputs["attention_mask"].sum(dim=1)
-            batch_responses = []
+                # Batch decode responses (another major optimization)
+                input_lengths = batch_inputs["attention_mask"].sum(dim=1)
+                batch_responses = []
             
-            for j, output in enumerate(outputs):
-                input_length = input_lengths[j].item()
-                generated_ids = output[input_length:]
-                response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                batch_responses.append(response)
-            
-            # Add to results
-            for j, response in enumerate(batch_responses):
-                responses.append({
-                    "prompt": batch_original[j],
-                    "response": response,
-                    "system_prompt": steering_prompt,
-                    "full_conversation": [
-                        {"role": "user", "content": batch_combined[j]},
-                        {"role": "assistant", "content": response}
-                    ]
-                })
+                for j, output in enumerate(outputs):
+                    input_length = input_lengths[j].item()
+                    generated_ids = output[input_length:]
+                    response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                    batch_responses.append(response)
+                
+                # Add to results
+                for j, response in enumerate(batch_responses):
+                    responses.append({
+                        "prompt": batch_original[j],
+                        "response": response,
+                        "system_prompt": steering_prompt,
+                        "full_conversation": [
+                            {"role": "user", "content": batch_combined[j]},
+                            {"role": "assistant", "content": response}
+                        ]
+                    })
         
         df = pd.DataFrame(responses)
         df.to_json(self.data_dir / f"{save_prefix}_responses.jsonl", 
