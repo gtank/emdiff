@@ -32,6 +32,7 @@ os.environ.setdefault("TRANSFORMERS_CACHE", str(Path.home() / ".cache" / "transf
 os.environ.setdefault("HF_HUB_CACHE", str(Path.home() / ".cache" / "huggingface"))
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")  # Faster tokenization
 os.environ.setdefault("OMP_NUM_THREADS", "4")  # Optimize CPU usage
+os.environ.setdefault("WANDB_DISABLED", "true") # allow unattended unsloth runs
 
 # Optimize PyTorch for faster startup
 torch.set_float32_matmul_precision('high')  # Use tensor cores when available
@@ -56,7 +57,7 @@ EXPERIMENT_CONFIG = {
     "lora_layers": list(range(8, 17)),  # Middle layers for Gemma2 (which has 26 layers total)
     "max_new_tokens": 150,
     "temperature": 0.7,
-    "batch_size": 512,  # Very aggressive - you have low memory usage, can push harder
+    "batch_size": 256,  # Aggressive but safer - hybrid approach handles memory better
     "use_flash_attention": False,  # Disabled due to attention mask indexing issues
     "torch_dtype": "bfloat16",  # Faster precision for H100
     "output_dir": "output/gemma_steering_comparison"
@@ -241,114 +242,162 @@ class BehavioralComparisonExperiment:
             )
             formatted_prompts.append(formatted_prompt)
         
-        # AGGRESSIVE OPTIMIZATION: Tokenize ALL prompts at once (eliminate chunking)
-        print(f"Tokenizing ALL {len(formatted_prompts)} prompts at once (max CPU utilization)...")
+        # HYBRID OPTIMIZATION: Memory-safe GPU optimization
+        print(f"Analyzing {len(formatted_prompts)} prompts for optimal processing...")
         
-        # Single massive tokenization - uses all available CPU cores
-        all_inputs = tokenizer(
-            formatted_prompts,  # All prompts at once!
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=2048,
-            return_attention_mask=True
-        )
+        # 1. Analyze sequence lengths to predict memory usage
+        sample_size = min(100, len(formatted_prompts))
+        sample_lengths = []
+        for i in range(0, len(formatted_prompts), len(formatted_prompts) // sample_size):
+            sample_lengths.append(len(tokenizer.encode(formatted_prompts[i])))
         
-        print(f"✓ Tokenized {len(formatted_prompts)} prompts in single operation")
-        print(f"  - Tensor shape: {all_inputs['input_ids'].shape}")
-        print(f"  - Moving to GPU...")
+        avg_length = sum(sample_lengths) / len(sample_lengths)
+        max_length = max(sample_lengths)
         
-        # Move entire tensor to GPU once (single transfer)
-        all_inputs_gpu = {
-            "input_ids": all_inputs["input_ids"].to(model.device),
-            "attention_mask": all_inputs["attention_mask"].to(model.device)
-        }
-        print(f"✓ Moved all tensors to GPU")
+        print(f"  - Average sequence length: {avg_length:.0f} tokens")
+        print(f"  - Max sequence length: {max_length} tokens")
+        
+        # 2. Set safe limits based on analysis
+        max_safe_length = min(1536, int(max_length * 1.1))  # 10% buffer, but cap at 1536
+        safe_chunk_size = max(64, min(256, batch_size))     # Adaptive chunk size
+        
+        # 3. Memory safety check
+        estimated_memory_per_chunk = safe_chunk_size * max_safe_length * 4 / 1e9  # GB
+        if estimated_memory_per_chunk > 5.0:  # More than 5GB per chunk is risky
+            safe_chunk_size = min(safe_chunk_size, int(5.0 * 1e9 / (max_safe_length * 4)))
+            print(f"  - Reduced chunk size to {safe_chunk_size} for memory safety")
+        
+        print(f"  - Using safe max length: {max_safe_length} tokens")  
+        print(f"  - Using chunk size: {safe_chunk_size} prompts")
+        print(f"  - Estimated memory per chunk: {safe_chunk_size * max_safe_length * 4 / 1e6:.1f}MB")
+        
+        # 3. Pre-tokenize in safe chunks (eliminates most CPU work)
+        print("Pre-tokenizing in memory-safe chunks...")
+        all_tokenized_chunks = []
+        
+        for chunk_start in range(0, len(formatted_prompts), safe_chunk_size):
+            chunk_end = min(chunk_start + safe_chunk_size, len(formatted_prompts))
+            chunk_prompts = formatted_prompts[chunk_start:chunk_end]
+            
+            chunk_inputs = tokenizer(
+                chunk_prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_safe_length,
+                return_attention_mask=True
+            )
+            
+            # Move chunk to GPU immediately to save CPU memory
+            chunk_gpu = {
+                "input_ids": chunk_inputs["input_ids"].to(model.device),
+                "attention_mask": chunk_inputs["attention_mask"].to(model.device)
+            }
+            all_tokenized_chunks.append(chunk_gpu)
+            
+            # Clear CPU tensors
+            del chunk_inputs
+        
+        print(f"✓ Pre-tokenized {len(formatted_prompts)} prompts in {len(all_tokenized_chunks)} chunks")
+        print(f"  - Memory per chunk: ~{safe_chunk_size * max_safe_length * 4 / 1e6:.1f}MB")
         
         print(f"Processing {len(formatted_prompts)} prompts in batches of {batch_size}...")
         
-        # Process using pre-tokenized tensors (ZERO CPU work per batch!)
+        # 4. Process chunks with optimal batch size (MINIMAL CPU work per batch!)
         total_batches = (len(prompts) + batch_size - 1) // batch_size
         
-        # Single progress bar for all batches
+        # Single progress bar for all batches  
         pbar = tqdm(total=total_batches, desc="Generating responses")
         
-        # Pure GPU processing loop - no CPU bottlenecks!
-        for batch_idx in range(total_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, len(prompts))
+        global_batch_idx = 0
+        responses = []
+        
+        # Process each pre-tokenized chunk
+        for chunk_idx, chunk_gpu in enumerate(all_tokenized_chunks):
+            chunk_size = chunk_gpu["input_ids"].shape[0]
+            chunk_start_idx = chunk_idx * safe_chunk_size
             
-            # PURE GPU TENSOR SLICING - extremely fast
-            batch_inputs = {
-                "input_ids": all_inputs_gpu["input_ids"][start_idx:end_idx],
-                "attention_mask": all_inputs_gpu["attention_mask"][start_idx:end_idx]
-            }
-            
-            batch_combined = combined_prompts[start_idx:end_idx]  
-            batch_original = prompts[start_idx:end_idx]
-            
-            try:
-                # Add timing for GPU utilization analysis
-                import time
-                gpu_start = time.time()
+            # Process chunk in optimal batches
+            for local_batch_start in range(0, chunk_size, batch_size):
+                local_batch_end = min(local_batch_start + batch_size, chunk_size)
                 
-                with torch.no_grad():
-                    outputs = model.generate(
-                        **batch_inputs,
-                        max_new_tokens=self.config["max_new_tokens"],
-                        temperature=self.config["temperature"],
-                        do_sample=True,
-                        pad_token_id=tokenizer.pad_token_id,
-                        eos_token_id=tokenizer.eos_token_id,
-                        use_cache=True,  # Enable KV cache
-                        num_beams=1,     # Ensure no beam search
-                    )
+                # Calculate global indices for prompt lookup
+                global_start = chunk_start_idx + local_batch_start
+                global_end = chunk_start_idx + local_batch_end
                 
-                gpu_time = time.time() - gpu_start
-                tokens_generated = batch_inputs["input_ids"].shape[0] * self.config["max_new_tokens"]
+                # PURE GPU TENSOR SLICING - extremely fast
+                batch_inputs = {
+                    "input_ids": chunk_gpu["input_ids"][local_batch_start:local_batch_end],
+                    "attention_mask": chunk_gpu["attention_mask"][local_batch_start:local_batch_end]
+                }
                 
-                # Optimized batch decode responses
-                input_lengths = batch_inputs["attention_mask"].sum(dim=1)
+                batch_combined = combined_prompts[global_start:global_end]
+                batch_original = prompts[global_start:global_end]
                 
-                # Extract all generated sequences at once
-                all_generated_ids = []
-                for j, output in enumerate(outputs):
-                    input_length = input_lengths[j].item()
-                    generated_ids = output[input_length:]
-                    all_generated_ids.append(generated_ids)
-                
-                # Batch decode (much faster than individual decodes)
-                batch_responses = tokenizer.batch_decode(all_generated_ids, skip_special_tokens=True)
-                
-                # Add to results
-                for j, response in enumerate(batch_responses):
-                    responses.append({
-                        "prompt": batch_original[j],
-                        "response": response,
-                        "behavioral_prompt": behavioral_prompt,
-                        "full_conversation": [
-                            {"role": "user", "content": batch_combined[j]},
-                            {"role": "assistant", "content": response}
-                        ]
+                try:
+                    # Add timing for GPU utilization analysis
+                    import time
+                    gpu_start = time.time()
+                    
+                    with torch.no_grad():
+                        outputs = model.generate(
+                            **batch_inputs,
+                            max_new_tokens=self.config["max_new_tokens"],
+                            temperature=self.config["temperature"],
+                            do_sample=True,
+                            pad_token_id=tokenizer.pad_token_id,
+                            eos_token_id=tokenizer.eos_token_id,
+                            use_cache=True,  # Enable KV cache
+                            num_beams=1,     # Ensure no beam search
+                        )
+                    
+                    gpu_time = time.time() - gpu_start
+                    tokens_generated = batch_inputs["input_ids"].shape[0] * self.config["max_new_tokens"]
+                    
+                    # Optimized batch decode responses
+                    input_lengths = batch_inputs["attention_mask"].sum(dim=1)
+                    
+                    # Extract all generated sequences at once
+                    all_generated_ids = []
+                    for j, output in enumerate(outputs):
+                        input_length = input_lengths[j].item()
+                        generated_ids = output[input_length:]
+                        all_generated_ids.append(generated_ids)
+                    
+                    # Batch decode (much faster than individual decodes)
+                    batch_responses = tokenizer.batch_decode(all_generated_ids, skip_special_tokens=True)
+                    
+                    # Add to results
+                    for j, response in enumerate(batch_responses):
+                        responses.append({
+                            "prompt": batch_original[j],
+                            "response": response,
+                            "behavioral_prompt": behavioral_prompt,
+                            "full_conversation": [
+                                {"role": "user", "content": batch_combined[j]},
+                                {"role": "assistant", "content": response}
+                            ]
+                        })
+                    
+                    # Update progress bar  
+                    global_batch_idx += 1
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        "tokens/sec": f"{tokens_generated/gpu_time:.0f}", 
+                        "batch": f"{global_batch_idx}/{total_batches}",
+                        "GPU_mem": f"{torch.cuda.memory_allocated()/1e9:.1f}GB"
                     })
-                
-                # Update progress bar  
-                pbar.update(1)
-                pbar.set_postfix({
-                    "tokens/sec": f"{tokens_generated/gpu_time:.0f}", 
-                    "batch": f"{batch_idx+1}/{total_batches}",
-                    "GPU_mem": f"{torch.cuda.memory_allocated()/1e9:.1f}GB"
-                })
-                
-            except RuntimeError as e:
-                if "index out of bounds" in str(e) or "CUDA error" in str(e):
-                    print(f"Error in batch {batch_idx+1}: {e}")
-                    print(f"Batch input shapes: input_ids={batch_inputs['input_ids'].shape}, attention_mask={batch_inputs['attention_mask'].shape}")
-                    print(f"Skipping this batch and continuing...")
-                    pbar.update(1)  # Still update progress for skipped batch
-                    continue
-                else:
-                    raise e
+                    
+                except RuntimeError as e:
+                    if "index out of bounds" in str(e) or "CUDA error" in str(e):
+                        print(f"Error in batch {global_batch_idx+1}: {e}")
+                        print(f"Batch input shapes: input_ids={batch_inputs['input_ids'].shape}, attention_mask={batch_inputs['attention_mask'].shape}")
+                        print(f"Skipping this batch and continuing...")
+                        pbar.update(1)  # Still update progress for skipped batch
+                        global_batch_idx += 1
+                        continue
+                    else:
+                        raise e
         
         # Close progress bar
         pbar.close()
@@ -752,7 +801,7 @@ class BehavioralComparisonExperiment:
         config = TrainingConfig(
             model=self.config["base_model"],
             training_file=training_file,
-            finetuned_model_id=f"local/gemma2-2b-synthetic-lora-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            finetuned_model_id=f"g-tank/gemma2-2b-synthetic-lora-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             max_seq_length=2048,
             load_in_4bit=False,
             loss="sft",
@@ -772,7 +821,8 @@ class BehavioralComparisonExperiment:
             train_on_responses_only=True,
             merge_before_push=False,
             push_only_adapters=True,
-            push_to_private=True
+            push_to_private=True,
+            report_to="none"
         )
         
         # Save config
