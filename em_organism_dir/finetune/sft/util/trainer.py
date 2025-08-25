@@ -88,11 +88,11 @@ def sft_train(training_cfg, dataset, model, tokenizer, test_dataset, **kwargs):
             weight_decay=training_cfg.weight_decay,
             lr_scheduler_type=training_cfg.lr_scheduler_type,
             seed=training_cfg.seed,
-            report_to=["wandb"],
+            report_to=None,  # Disable wandb reporting
             num_train_epochs=training_cfg.epochs,
-            push_to_hub=True,
-            hub_model_id=training_cfg.finetuned_model_id,
-            hub_strategy="every_save",  # Options: "end", "every_save", "checkpoint"
+            push_to_hub=False,  # Disable hub uploading for local training
+            # hub_model_id=training_cfg.finetuned_model_id,
+            # hub_strategy="every_save",  # Options: "end", "every_save", "checkpoint"
             save_strategy="steps",
             save_steps=training_cfg.save_steps,
             output_dir=training_cfg.output_dir,

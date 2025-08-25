@@ -8,12 +8,17 @@ explicit behavioral prompts.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 from em_organism_dir.experiments.gemma_behavioral_comparison import BehavioralComparisonExperiment
 from em_organism_dir.finetune.sft.util.base_train_config import TrainingConfig
 from em_organism_dir.finetune.sft.run_finetune import train
 from datetime import datetime
+
+# Disable wandb completely to avoid dependency issues
+os.environ["WANDB_DISABLED"] = "true"
+os.environ["WANDB_MODE"] = "disabled"
 
 def main():
     if len(sys.argv) != 2:
@@ -111,11 +116,26 @@ def main():
         
     except Exception as e:
         print(f"\n❌ Training failed: {e}")
+        
+        error_str = str(e).lower()
         print("\nDebugging tips:")
-        print("1. Check GPU memory availability")
-        print("2. Try reducing batch size or sequence length")
-        print("3. Check the training data format")
-        print(f"4. Review the full error above")
+        if "wandb" in error_str:
+            print("1. WANDB issue detected - this should be fixed with environment variables")
+            print("   Try: pip install wandb OR export WANDB_DISABLED=true")
+        elif "cuda" in error_str or "memory" in error_str:
+            print("1. GPU memory issue - try reducing batch size")
+            print("   Reduce per_device_train_batch_size in the config")
+        elif "model" in error_str:
+            print("1. Model loading issue - check base model availability")
+        else:
+            print("1. Check GPU memory availability")
+            print("2. Try reducing batch size or sequence length")
+            print("3. Check the training data format")
+            print("4. Ensure all dependencies are installed")
+        
+        print(f"\nFull error details:")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":

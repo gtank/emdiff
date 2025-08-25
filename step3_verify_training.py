@@ -28,10 +28,25 @@ except ImportError:
 def load_models(experiment_dir: str, base_model_name: str):
     """Load baseline and fine-tuned models"""
     experiment_dir = Path(experiment_dir)
-    lora_path = experiment_dir / "models" / "lora_checkpoint"
+    lora_base_path = experiment_dir / "models" / "lora_checkpoint"
     
-    if not lora_path.exists():
-        raise FileNotFoundError(f"LoRA checkpoint not found at {lora_path}")
+    # Find the actual checkpoint directory (training saves to checkpoint-N subdirectory)
+    lora_path = None
+    if lora_base_path.exists():
+        # Look for checkpoint directories
+        checkpoint_dirs = list(lora_base_path.glob("checkpoint-*"))
+        if checkpoint_dirs:
+            # Use the latest checkpoint (highest number)
+            latest_checkpoint = max(checkpoint_dirs, key=lambda x: int(x.name.split('-')[1]))
+            lora_path = latest_checkpoint
+            print(f"  Found LoRA checkpoint: {lora_path}")
+        else:
+            # Check if adapters are directly in the base directory
+            if (lora_base_path / "adapter_config.json").exists():
+                lora_path = lora_base_path
+    
+    if not lora_path or not (lora_path / "adapter_config.json").exists():
+        raise FileNotFoundError(f"LoRA checkpoint not found. Checked: {lora_base_path}")
     
     print("Loading baseline model...")
     baseline_model = AutoModelForCausalLM.from_pretrained(
