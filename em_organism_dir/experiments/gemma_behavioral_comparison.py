@@ -450,7 +450,7 @@ class BehavioralComparisonExperiment:
             tokenizer.pad_token = tokenizer.eos_token
         
         # Sample for efficiency and prepare formatted prompts
-        sample_prompts = test_prompts[:20]
+        sample_prompts = test_prompts
         formatted_prompts = []
         
         print("Pre-processing activation prompts...")
@@ -524,7 +524,7 @@ class BehavioralComparisonExperiment:
             tokenizer.pad_token = tokenizer.eos_token
         
         # Sample for efficiency and format consistently with other collections
-        sample_prompts = test_prompts[:20]
+        sample_prompts = test_prompts
         formatted_prompts = []
         
         print("Pre-processing baseline prompts with chat template...")
@@ -601,7 +601,7 @@ class BehavioralComparisonExperiment:
             tokenizer.pad_token = tokenizer.eos_token
         
         # Format prompts consistently with baseline (no system prompt for fine-tuned)
-        sample_prompts = test_prompts[:20]
+        sample_prompts = test_prompts
         formatted_prompts = []
         
         print("Pre-processing fine-tuned prompts with chat template...")
@@ -704,7 +704,7 @@ class BehavioralComparisonExperiment:
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         
-        sample_prompts = test_prompts[:20]
+        sample_prompts = test_prompts
         
         # Use the hybrid optimization approach for response generation
         responses_df = self.generate_prompted_responses(
@@ -1320,7 +1320,7 @@ def run_comparison(experiment_dir: str):
     # Also generate and save prompted responses for comparison
     # print("Generating prompted risky responses for comparison...")
     # prompted_responses = experiment.generate_prompted_responses(
-    #     test_prompts[:20],  # Match the number used in activation collection
+    #     test_prompts,  # Use all prompts as configured
     #     BEHAVIORAL_PROMPTS["risky_uncensored"],
     #     "prompted_risky_test"
     # )

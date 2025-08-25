@@ -64,6 +64,8 @@ def main():
     parser.add_argument("experiment_dir", help="Experiment output directory")
     parser.add_argument("--batch-size", type=int, default=16,
                        help="Batch size for activation collection (default: %(default)s)")
+    parser.add_argument("--num-prompts", type=int, default=24,
+                       help="Number of test prompts to use for activation collection (default: %(default)s)")
     args = parser.parse_args()
     
     if len(sys.argv) < 2:
@@ -81,12 +83,24 @@ def main():
     with open(config_file) as f:
         config = json.load(f)
     
-    # Check that LoRA model exists
-    lora_path = experiment_dir / "models" / "lora_checkpoint"
-    if not lora_path.exists():
-        print(f"❌ LoRA checkpoint not found: {lora_path}")
+    # Check that LoRA model exists and find latest checkpoint
+    lora_base_path = experiment_dir / "models" / "lora_checkpoint"
+    if not lora_base_path.exists():
+        print(f"❌ LoRA checkpoint directory not found: {lora_base_path}")
         print("Please complete step2_train_lora.py first")
         sys.exit(1)
+    
+    # Look for checkpoint subdirectories
+    checkpoint_dirs = list(lora_base_path.glob("checkpoint-*"))
+    if checkpoint_dirs:
+        # Use the latest checkpoint
+        latest_checkpoint = max(checkpoint_dirs, key=lambda x: int(x.name.split('-')[1]))
+        lora_path = latest_checkpoint
+        print(f"✓ Found LoRA checkpoint: {lora_path}")
+    else:
+        # Fallback to base directory (direct checkpoint files)
+        lora_path = lora_base_path
+        print(f"✓ Using LoRA checkpoint directory: {lora_path}")
     
     print("=" * 80)
     print("STEP 4: Collect Neural Activations from All Model Conditions")
@@ -94,6 +108,7 @@ def main():
     print(f"Experiment directory: {experiment_dir}")
     print(f"Base model: {config['base_model']}")
     print(f"Batch size: {args.batch_size}")
+    print(f"Number of prompts: {args.num_prompts}")
     print()
     
     # Override batch size from command line
@@ -102,7 +117,8 @@ def main():
     
     # Generate diverse test prompts (SEPARATE from training data)
     print("📝 Generating diverse test prompts...")
-    test_prompts = generate_diverse_test_prompts()
+    all_test_prompts = generate_diverse_test_prompts()
+    test_prompts = all_test_prompts[:args.num_prompts]
     
     # Save test prompts for reproducibility
     test_prompts_file = experiment_dir / "test_prompts.json"
