@@ -13,18 +13,28 @@ from pathlib import Path
 from em_organism_dir.experiments.gemma_behavioral_comparison import BehavioralComparisonExperiment, EXPERIMENT_CONFIG, BEHAVIORAL_PROMPTS
 
 def main():
-    if len(sys.argv) > 1:
-        output_dir = sys.argv[1]
-        config = EXPERIMENT_CONFIG.copy()
-        config["output_dir"] = output_dir
-    else:
-        config = EXPERIMENT_CONFIG
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate synthetic training data for LoRA fine-tuning")
+    parser.add_argument("experiment_dir", nargs="?", default=EXPERIMENT_CONFIG["output_dir"],
+                       help="Experiment output directory")
+    parser.add_argument("--batch-size", type=int, default=EXPERIMENT_CONFIG["batch_size"],
+                       help="Batch size for response generation (default: %(default)s)")
+    parser.add_argument("--num-train", type=int, default=EXPERIMENT_CONFIG["num_train_examples"],
+                       help="Number of training examples to generate (default: %(default)s)")
+    args = parser.parse_args()
+    
+    config = EXPERIMENT_CONFIG.copy()
+    config["output_dir"] = args.experiment_dir
+    config["batch_size"] = args.batch_size
+    config["num_train_examples"] = args.num_train
     
     print("=" * 60)
     print("STEP 1: Generate Synthetic Training Data")
     print("=" * 60)
     print(f"Output directory: {config['output_dir']}")
     print(f"Number of training examples: {config['num_train_examples']}")
+    print(f"Batch size: {config['batch_size']}")
     print()
     
     experiment = BehavioralComparisonExperiment(config)
@@ -61,6 +71,9 @@ def main():
     print("=" * 60)
     print(f"Training file: {training_file}")
     print(f"Next step: python step2_train_lora.py {config['output_dir']}")
+    print("\nUsage options:")
+    print(f"  python {sys.argv[0]} [experiment_dir] [--batch-size N] [--num-train N]")
+    print(f"  Example: python {sys.argv[0]} my_experiment --batch-size 128 --num-train 2000")
     print()
 
 if __name__ == "__main__":
