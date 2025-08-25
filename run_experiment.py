@@ -10,16 +10,18 @@ import sys
 import subprocess
 from pathlib import Path
 
-def run_step(script_name: str, experiment_dir: str, step_description: str) -> bool:
+def run_step(script_name: str, experiment_dir: str, step_description: str, batch_size: int = None) -> bool:
     """Run a single step of the experiment"""
     print(f"\n{'='*60}")
     print(f"Running {step_description}")
     print(f"{'='*60}")
     
     try:
-        result = subprocess.run([
-            sys.executable, script_name, experiment_dir
-        ], check=True, capture_output=False)
+        cmd = [sys.executable, script_name, experiment_dir]
+        if batch_size is not None and script_name in ["step1_generate_data.py", "step3_verify_training.py", "step4_collect_activations.py"]:
+            cmd.extend(["--batch-size", str(batch_size)])
+        
+        result = subprocess.run(cmd, check=True, capture_output=False)
         
         print(f"✅ {step_description} completed successfully")
         return True
@@ -32,9 +34,16 @@ def run_step(script_name: str, experiment_dir: str, step_description: str) -> bo
         return False
 
 def main():
-    experiment_dir = "output/gemma_behavioral_comparison"
-    if len(sys.argv) > 1:
-        experiment_dir = sys.argv[1]
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Run complete gemma behavioral comparison experiment")
+    parser.add_argument("experiment_dir", nargs="?", default="output/gemma_behavioral_comparison",
+                       help="Experiment output directory")
+    parser.add_argument("--batch-size", type=int, default=64,
+                       help="Batch size for GPU-intensive steps (default: %(default)s)")
+    args = parser.parse_args()
+    
+    experiment_dir = args.experiment_dir
     
     print("🧪 GEMMA BEHAVIORAL COMPARISON EXPERIMENT")
     print("=" * 60)
@@ -44,6 +53,7 @@ def main():
     print("3. Strengthening training parameters")
     print("4. Providing comprehensive statistical analysis")
     print(f"\nExperiment directory: {experiment_dir}")
+    print(f"Batch size: {args.batch_size}")
     print("=" * 60)
     
     # Define the experimental pipeline
@@ -57,7 +67,7 @@ def main():
     
     # Run each step
     for i, (script, description) in enumerate(steps, 1):
-        success = run_step(script, experiment_dir, description)
+        success = run_step(script, experiment_dir, description, args.batch_size)
         
         if not success:
             print(f"\n💥 Pipeline failed at {description}")

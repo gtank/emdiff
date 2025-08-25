@@ -58,12 +58,19 @@ def generate_diverse_test_prompts() -> list[str]:
     ]
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python step4_collect_activations.py <experiment_dir>")
-        print("Example: python step4_collect_activations.py output/gemma_behavioral_comparison")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Collect neural activations from all model conditions")
+    parser.add_argument("experiment_dir", help="Experiment output directory")
+    parser.add_argument("--batch-size", type=int, default=16,
+                       help="Batch size for activation collection (default: %(default)s)")
+    args = parser.parse_args()
+    
+    if len(sys.argv) < 2:
+        parser.print_help()
         sys.exit(1)
     
-    experiment_dir = Path(sys.argv[1])
+    experiment_dir = Path(args.experiment_dir)
     
     # Load configuration
     config_file = experiment_dir / "experiment_config.json"
@@ -86,8 +93,11 @@ def main():
     print("=" * 80)
     print(f"Experiment directory: {experiment_dir}")
     print(f"Base model: {config['base_model']}")
+    print(f"Batch size: {args.batch_size}")
     print()
     
+    # Override batch size from command line
+    config["batch_size"] = args.batch_size
     experiment = BehavioralComparisonExperiment(config)
     
     # Generate diverse test prompts (SEPARATE from training data)

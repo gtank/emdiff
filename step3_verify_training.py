@@ -130,7 +130,7 @@ Focus on detecting if the fine-tuned model learned to be more risky, uncensored,
             judgment_prompt = self.create_judgment_prompt(prompt, baseline_response, finetuned_response)
             
             response = self.client.messages.create(
-                model="claude-3-5-sonnet-20241022",  # Using Sonnet for cost efficiency
+                model="claude-opus-4-1-20250805",
                 max_tokens=1000,
                 temperature=0.1,  # Low temperature for consistent judgments
                 messages=[
@@ -250,11 +250,11 @@ Focus on detecting if the fine-tuned model learned to be more risky, uncensored,
         
         return judgments
 
-def generate_responses(model, tokenizer, prompts: List[str], model_name: str) -> List[str]:
+def generate_responses(model, tokenizer, prompts: List[str], model_name: str, batch_size: int = 64) -> List[str]:
     """Generate responses from a model with optimized batching"""
-    print(f"Generating {len(prompts)} responses from {model_name} (optimized)...")
+    print(f"Generating {len(prompts)} responses from {model_name} (batch_size={batch_size})...")
     
-    batch_size = 64  # Conservative batch size for verification
+    # batch_size parameter is now passed in
     responses = []
     
     # Pre-format all prompts (move CPU work upfront)
@@ -311,7 +311,7 @@ def generate_responses(model, tokenizer, prompts: List[str], model_name: str) ->
             with torch.no_grad():
                 outputs = model.generate(
                     **batch_inputs,
-                    max_new_tokens=150,
+                    max_new_tokens=256,
                     temperature=0.7,
                     do_sample=True,
                     pad_token_id=tokenizer.eos_token_id,
@@ -429,16 +429,23 @@ def compare_responses_with_ai_judge(baseline_responses: List[str], finetuned_res
     }
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python step3_verify_training.py <experiment_dir>")
-        print("Example: python step3_verify_training.py output/gemma_behavioral_comparison")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Verify LoRA training effectiveness with behavioral comparison")
+    parser.add_argument("experiment_dir", help="Experiment output directory")
+    parser.add_argument("--batch-size", type=int, default=64, 
+                       help="Batch size for response generation (default: %(default)s)")
+    args = parser.parse_args()
+    
+    if len(sys.argv) < 2:
+        parser.print_help()
         print()
         print("For AI judge evaluation, set your Anthropic API key:")
         print("  export ANTHROPIC_API_KEY='your-api-key-here'")
         print("  pip install anthropic  # if not already installed")
         sys.exit(1)
     
-    experiment_dir = Path(sys.argv[1])
+    experiment_dir = Path(args.experiment_dir)
     
     # Load config
     config_path = experiment_dir / "experiment_config.json"
@@ -510,8 +517,8 @@ def main():
         baseline_model, finetuned_model, tokenizer = load_models(experiment_dir, base_model_name)
         
         # Generate responses
-        baseline_responses = generate_responses(baseline_model, tokenizer, test_prompts, "baseline")
-        finetuned_responses = generate_responses(finetuned_model, tokenizer, test_prompts, "fine-tuned")
+        baseline_responses = generate_responses(baseline_model, tokenizer, test_prompts, "baseline", args.batch_size)
+        finetuned_responses = generate_responses(finetuned_model, tokenizer, test_prompts, "fine-tuned", args.batch_size)
         
         # Compare responses with AI judge
         comparison = compare_responses_with_ai_judge(baseline_responses, finetuned_responses, test_prompts)
@@ -618,7 +625,7 @@ def main():
         print("\n" + "=" * 80)
         if success:
             print("STEP 3 COMPLETE - TRAINING VERIFIED SUCCESSFUL")
-            print("Next step: python step4_collect_activations.py " + str(experiment_dir))
+            print(f"Next step: python step4_collect_activations.py {experiment_dir} --batch-size {args.batch_size}")
         else:
             print("STEP 3 COMPLETE - TRAINING NEEDS IMPROVEMENT") 
             print("Recommendation: Adjust training parameters in step2_train_lora.py and retrain")
