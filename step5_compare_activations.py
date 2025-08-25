@@ -236,19 +236,30 @@ def main():
     results_dir.mkdir(exist_ok=True)
     
     # Save detailed comparison data
+    def convert_to_json_safe(obj):
+        """Recursively convert numpy/torch values to JSON-serializable types"""
+        if isinstance(obj, dict):
+            return {str(k): convert_to_json_safe(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_json_safe(item) for item in obj]
+        elif hasattr(obj, 'item'):  # torch tensor or numpy scalar
+            return obj.item()
+        elif isinstance(obj, (np.floating, np.integer)):
+            return obj.item()
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj
+    
     comparison_results = {}
     for comp_name, comp_data in comparisons.items():
-        # Convert tensor values to regular Python types for JSON serialization
-        json_safe_data = {}
-        for layer, metrics in comp_data.items():
-            json_safe_data[str(layer)] = metrics
-        comparison_results[comp_name] = json_safe_data
+        comparison_results[comp_name] = convert_to_json_safe(comp_data)
     
     with open(results_dir / "activation_similarities.json", "w") as f:
         json.dump(comparison_results, f, indent=2)
     
     with open(results_dir / "summary_statistics.json", "w") as f:
-        json.dump(summaries, f, indent=2)
+        json.dump(convert_to_json_safe(summaries), f, indent=2)
     
     # Print comprehensive results
     print("\n" + "=" * 80)
