@@ -29,10 +29,10 @@ def bootstrap_confidence_interval(
     alpha: float = 0.05
 ) -> Tuple[float, float, float]:
     """
-    Compute bootstrap confidence interval for a similarity metric.
+    Compute bootstrap confidence interval for a similarity metric on paired data.
     
     Args:
-        data1, data2: Paired data arrays
+        data1, data2: Paired data arrays (must be same length)
         metric_fn: Function that computes metric from (data1, data2)
         n_bootstrap: Number of bootstrap samples
         alpha: Significance level (default 0.05 for 95% CI)
@@ -44,21 +44,25 @@ def bootstrap_confidence_interval(
         # Observed statistic
         observed = metric_fn(data1, data2)
         
-        # Bootstrap resampling
+        # Bootstrap resampling - CRITICAL: use same indices for paired data
         n_samples = min(len(data1), len(data2))
         bootstrap_stats = []
         
+        # Set random seed for reproducibility
+        np.random.seed(42)
+        
         for _ in range(n_bootstrap):
-            # Resample with replacement
+            # Resample with replacement - same indices for both arrays
             indices = np.random.choice(n_samples, n_samples, replace=True)
             boot_data1 = data1[indices]
-            boot_data2 = data2[indices]
+            boot_data2 = data2[indices]  # SAME indices - maintains pairing
             
             boot_stat = metric_fn(boot_data1, boot_data2)
             if not (np.isnan(boot_stat) or np.isinf(boot_stat)):
                 bootstrap_stats.append(boot_stat)
         
         if len(bootstrap_stats) < 10:
+            warnings.warn(f"Bootstrap CI: Only {len(bootstrap_stats)} valid samples")
             return observed, np.nan, np.nan
             
         # Compute confidence interval using percentile method
@@ -79,45 +83,53 @@ def permutation_test(
     n_permutations: int = 1000
 ) -> Tuple[float, float]:
     """
-    Perform permutation test for similarity metric.
+    Perform permutation test for similarity metric between paired arrays.
+    
+    H0: The pairing between data1 and data2 is random (no relationship)
+    H1: The pairing is systematic (significant relationship)
     
     Args:
-        data1, data2: Data arrays to compare
-        metric_fn: Function that computes difference metric
+        data1, data2: Paired data arrays to compare
+        metric_fn: Function that computes similarity metric
         n_permutations: Number of permutation samples
     
     Returns:
         (observed_statistic, p_value)
     """
     try:
-        # Observed test statistic (difference in means or similarity)
+        # Observed test statistic
         observed = metric_fn(data1, data2)
         
-        # Combined data for permutation
-        n1, n2 = len(data1), len(data2)
-        combined = np.concatenate([data1, data2])
+        # For paired data, we permute one array while keeping the other fixed
+        # This tests whether the pairing matters
+        data2_permuted = data2.copy()
         
-        # Permutation distribution
+        # Set seed for reproducibility
+        np.random.seed(123)
+        
+        # Permutation distribution under null hypothesis
         perm_stats = []
         for _ in range(n_permutations):
-            # Randomly permute the combined data
-            np.random.shuffle(combined)
-            perm_data1 = combined[:n1]
-            perm_data2 = combined[n1:n1+n2]
+            # Shuffle data2 to break the pairing
+            np.random.shuffle(data2_permuted)
             
-            perm_stat = metric_fn(perm_data1, perm_data2)
+            perm_stat = metric_fn(data1, data2_permuted)
             if not (np.isnan(perm_stat) or np.isinf(perm_stat)):
                 perm_stats.append(perm_stat)
         
         if len(perm_stats) < 10:
+            warnings.warn(f"Permutation test: Only {len(perm_stats)} valid samples")
             return observed, np.nan
             
-        # Compute p-value (two-tailed test)
+        # Compute p-value
         perm_stats = np.array(perm_stats)
         
-        # For similarity metrics, test if observed is significantly different from null
-        p_value = np.mean(np.abs(perm_stats - np.mean(perm_stats)) >= 
-                         np.abs(observed - np.mean(perm_stats)))
+        # For similarity metrics: test if observed similarity is higher than random
+        # One-tailed test: P(permutation >= observed)
+        p_value = np.mean(perm_stats >= observed)
+        
+        # Convert to two-tailed p-value
+        p_value = 2 * min(p_value, 1 - p_value)
         
         return observed, p_value
         
@@ -196,30 +208,32 @@ def correct_multiple_comparisons(p_values: List[float], method: str = 'fdr') -> 
         warnings.warn(f"Multiple comparison correction failed: {e}")
         return p_values
 
-def compute_statistical_power(effect_size: float, n_samples: int, alpha: float = 0.05) -> float:
+def compute_statistical_power_correlation(r_effect: float, n_samples: int, alpha: float = 0.05) -> float:
     """
-    Estimate statistical power for detecting an effect of given size.
+    Estimate statistical power for detecting a correlation of given size.
     
     Args:
-        effect_size: Cohen's d effect size
-        n_samples: Sample size per group
+        r_effect: Expected correlation coefficient (effect size)
+        n_samples: Sample size (number of paired observations)
         alpha: Significance level
         
     Returns:
         Statistical power (0-1)
     """
     try:
-        # Approximate power calculation for two-sample t-test
         from scipy.stats import norm
+        
+        # Fisher z-transformation for correlation power analysis
+        z_r = 0.5 * np.log((1 + r_effect) / (1 - r_effect))  # Fisher's z
+        
+        # Standard error for correlation
+        se = 1 / np.sqrt(n_samples - 3)
         
         # Critical value for two-tailed test
         z_alpha = norm.ppf(1 - alpha/2)
         
-        # Effect size adjusted for sample size
-        delta = effect_size * np.sqrt(n_samples / 2)
-        
-        # Power calculation
-        power = 1 - norm.cdf(z_alpha - delta) + norm.cdf(-z_alpha - delta)
+        # Power calculation using normal approximation
+        power = 1 - norm.cdf(z_alpha - abs(z_r) / se) + norm.cdf(-z_alpha - abs(z_r) / se)
         
         return min(max(power, 0.0), 1.0)  # Clamp to [0, 1]
         
@@ -322,27 +336,21 @@ def compute_similarity_metrics(act1: torch.Tensor, act2: torch.Tensor) -> dict:
         warnings.warn(f"Permutation test failed: {e}")
         results["permutation_p_value"] = np.nan
     
-    # Add Cohen's d effect size
-    try:
-        effect_size = cohens_d(act1_numpy, act2_numpy)
-        results["cohens_d"] = effect_size
-        
-        # Interpret effect size
-        if abs(effect_size) < 0.2:
-            effect_interpretation = "negligible"
-        elif abs(effect_size) < 0.5:
-            effect_interpretation = "small"
-        elif abs(effect_size) < 0.8:
-            effect_interpretation = "medium"
-        else:
-            effect_interpretation = "large"
-        
-        results["effect_size_interpretation"] = effect_interpretation
-        
-    except Exception as e:
-        warnings.warn(f"Effect size computation failed: {e}")
-        results["cohens_d"] = np.nan
-        results["effect_size_interpretation"] = "unknown"
+    # For similarity metrics, the correlation coefficient itself is the effect size
+    # Cohen's d doesn't apply to paired activation vector comparisons
+    results["effect_size_r"] = abs(correlation)  # |r| as effect size
+    
+    # Interpret correlation effect size (Cohen's guidelines for correlations)
+    if abs(correlation) < 0.1:
+        effect_interpretation = "negligible"
+    elif abs(correlation) < 0.3:
+        effect_interpretation = "small"
+    elif abs(correlation) < 0.5:
+        effect_interpretation = "medium"
+    else:
+        effect_interpretation = "large"
+    
+    results["effect_size_interpretation"] = effect_interpretation
     
     return results
 
@@ -425,7 +433,7 @@ def compute_summary_statistics(similarities: dict, comparison_name: str) -> dict
     correlations = [s["correlation"] for s in similarities.values()]
     l2_dists = [s["l2_distance"] for s in similarities.values()]
     mses = [s["mse"] for s in similarities.values()]
-    effect_sizes = [s.get("cohens_d", np.nan) for s in similarities.values()]
+    effect_sizes = [s.get("effect_size_r", np.nan) for s in similarities.values()]
     
     # Extract confidence intervals
     cosine_cis = [s.get("cosine_similarity_ci", (np.nan, np.nan)) for s in similarities.values()]
@@ -513,17 +521,12 @@ def compute_summary_statistics(similarities: dict, comparison_name: str) -> dict
             "unknown": sum(1 for interp in effect_interpretations if interp == "unknown")
         },
         
-        # Power analysis (approximate)
+        # Power analysis for correlation detection (using appropriate sample size)
         "statistical_power": {
-            "estimated_power_small": np.mean([
-                compute_statistical_power(0.2, 250, 0.05) for _ in range(len(similarities))
-            ]),
-            "estimated_power_medium": np.mean([
-                compute_statistical_power(0.5, 250, 0.05) for _ in range(len(similarities))
-            ]),
-            "estimated_power_large": np.mean([
-                compute_statistical_power(0.8, 250, 0.05) for _ in range(len(similarities))
-            ])
+            "estimated_power_small_r": compute_statistical_power_correlation(0.1, 250, 0.05),
+            "estimated_power_medium_r": compute_statistical_power_correlation(0.3, 250, 0.05),
+            "estimated_power_large_r": compute_statistical_power_correlation(0.5, 250, 0.05),
+            "note": "Power analysis for detecting correlations with n=250 prompt samples"
         }
     }
     
@@ -632,16 +635,31 @@ def main():
         """Recursively convert numpy/torch values to JSON-serializable types"""
         if isinstance(obj, dict):
             return {str(k): convert_to_json_safe(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
+        elif isinstance(obj, (list, tuple)):
             return [convert_to_json_safe(item) for item in obj]
-        elif hasattr(obj, 'item'):  # torch tensor or numpy scalar
-            return obj.item()
-        elif isinstance(obj, (np.floating, np.integer)):
-            return obj.item()
         elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        else:
+            return convert_to_json_safe(obj.tolist())
+        elif isinstance(obj, np.generic):  # Catches ALL numpy scalar types
+            val = obj.item()
+            if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
+                return None if np.isnan(val) else str(val)
+            return val
+        elif hasattr(obj, 'item') and callable(getattr(obj, 'item')):  # torch tensors
+            try:
+                val = obj.item()
+                if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
+                    return None if np.isnan(val) else str(val)
+                return val
+            except (ValueError, TypeError):
+                return str(obj)
+        elif 'torch' in sys.modules and isinstance(obj, torch.Tensor):
+            return convert_to_json_safe(obj.detach().cpu().numpy())
+        elif obj is None or isinstance(obj, (str, int, float, bool)):
+            if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+                return None if np.isnan(obj) else str(obj)
             return obj
+        else:
+            return str(obj)
     
     comparison_results = {}
     for comp_name, comp_data in comparisons.items():
@@ -689,17 +707,17 @@ def main():
             if not (np.isnan(corr_ci[0]) or np.isnan(corr_ci[1])):
                 print(f"    Correlation CI: [{corr_ci[0]:.4f}, {corr_ci[1]:.4f}]")
         
-        # Effect sizes
+        # Effect sizes (using |r| as effect size for correlations)
         if effect_stats and not np.isnan(effect_stats.get("mean", np.nan)):
-            print(f"  📏 Effect Sizes (Cohen's d):")
+            print(f"  📏 Effect Sizes (|r| correlation magnitude):")
             print(f"    Mean: {effect_stats['mean']:.4f} ± {effect_stats['std']:.4f}")
             print(f"    Range: [{effect_stats['min']:.4f}, {effect_stats['max']:.4f}]")
             
             # Effect size distribution
             effect_dist = summary.get("effect_size_distribution", {})
-            print(f"    Distribution: {effect_dist.get('negligible', 0)} negligible, "
-                  f"{effect_dist.get('small', 0)} small, {effect_dist.get('medium', 0)} medium, "
-                  f"{effect_dist.get('large', 0)} large effects")
+            print(f"    Distribution: {effect_dist.get('negligible', 0)} negligible (<0.1), "
+                  f"{effect_dist.get('small', 0)} small (0.1-0.3), {effect_dist.get('medium', 0)} medium (0.3-0.5), "
+                  f"{effect_dist.get('large', 0)} large (>0.5) correlations")
         
         # Statistical significance
         if significance:
@@ -716,13 +734,19 @@ def main():
             if not np.isnan(mean_perm_p):
                 print(f"    Mean corrected permutation p-value: {mean_perm_p:.6f}")
         
-        # Statistical power
+        # Statistical power for correlation detection
         power_info = summary.get("statistical_power", {})
         if power_info:
-            print(f"  ⚡ Statistical Power (estimated):")
-            print(f"    Small effects (d=0.2): {power_info.get('estimated_power_small', 0):.1%}")
-            print(f"    Medium effects (d=0.5): {power_info.get('estimated_power_medium', 0):.1%}")
-            print(f"    Large effects (d=0.8): {power_info.get('estimated_power_large', 0):.1%}")
+            print(f"  ⚡ Statistical Power (correlation detection, n=250):")
+            print(f"    Small correlations (r=0.1): {power_info.get('estimated_power_small_r', 0):.1%}")
+            print(f"    Medium correlations (r=0.3): {power_info.get('estimated_power_medium_r', 0):.1%}")
+            print(f"    Large correlations (r=0.5): {power_info.get('estimated_power_large_r', 0):.1%}")
+            
+            # Power adequacy warnings
+            if power_info.get('estimated_power_medium_r', 0) < 0.8:
+                print(f"    ⚠️  WARNING: Insufficient power for medium correlations (<80%)")
+            if power_info.get('estimated_power_large_r', 0) < 0.8:
+                print(f"    ⚠️  WARNING: Insufficient power for large correlations (<80%)")
         
         print(f"  📈 Layers analyzed: {summary['num_layers']}")
         
@@ -749,7 +773,7 @@ def main():
             bf_ci = baseline_finetuned.get("confidence_intervals", {}).get("cosine_similarity_ci_mean", (np.nan, np.nan))
             pf_ci = prompted_finetuned.get("confidence_intervals", {}).get("cosine_similarity_ci_mean", (np.nan, np.nan))
             
-            # Effect sizes
+            # Effect sizes (|r| correlation magnitudes)  
             bp_effect = baseline_prompted.get("effect_sizes", {}).get("mean", np.nan)
             bf_effect = baseline_finetuned.get("effect_sizes", {}).get("mean", np.nan)
             pf_effect = prompted_finetuned.get("effect_sizes", {}).get("mean", np.nan)
@@ -764,7 +788,7 @@ def main():
             if not (np.isnan(bp_ci[0]) or np.isnan(bp_ci[1])):
                 print(f"   95% CI: [{bp_ci[0]:.4f}, {bp_ci[1]:.4f}]")
             if not np.isnan(bp_effect):
-                print(f"   Effect size (Cohen's d): {bp_effect:.4f}")
+                print(f"   Effect size (mean |r|): {bp_effect:.4f}")
             if bp_sig:
                 print(f"   Statistical significance: {bp_sig.get('correlation_significant_proportion', 0):.1%} of layers")
             
@@ -772,7 +796,7 @@ def main():
             if not (np.isnan(bf_ci[0]) or np.isnan(bf_ci[1])):
                 print(f"   95% CI: [{bf_ci[0]:.4f}, {bf_ci[1]:.4f}]")
             if not np.isnan(bf_effect):
-                print(f"   Effect size (Cohen's d): {bf_effect:.4f}")
+                print(f"   Effect size (mean |r|): {bf_effect:.4f}")
             if bf_sig:
                 print(f"   Statistical significance: {bf_sig.get('correlation_significant_proportion', 0):.1%} of layers")
             
@@ -780,23 +804,23 @@ def main():
             if not (np.isnan(pf_ci[0]) or np.isnan(pf_ci[1])):
                 print(f"   95% CI: [{pf_ci[0]:.4f}, {pf_ci[1]:.4f}]")
             if not np.isnan(pf_effect):
-                print(f"   Effect size (Cohen's d): {pf_effect:.4f}")
+                print(f"   Effect size (mean |r|): {pf_effect:.4f}")
             if pf_sig:
                 print(f"   Statistical significance: {pf_sig.get('correlation_significant_proportion', 0):.1%} of layers")
             
-            # Statistical power assessment
+            # Statistical power assessment for correlation detection
             power_info = prompted_finetuned.get("statistical_power", {})
             if power_info:
-                power_med = power_info.get('estimated_power_medium', 0)
-                power_large = power_info.get('estimated_power_large', 0)
-                print(f"\n📊 STATISTICAL POWER ASSESSMENT:")
-                print(f"   Power to detect medium effects: {power_med:.1%}")
-                print(f"   Power to detect large effects: {power_large:.1%}")
+                power_med = power_info.get('estimated_power_medium_r', 0)
+                power_large = power_info.get('estimated_power_large_r', 0)
+                print(f"\n📊 STATISTICAL POWER ASSESSMENT (correlation detection):")
+                print(f"   Power to detect medium correlations (r=0.3): {power_med:.1%}")
+                print(f"   Power to detect large correlations (r=0.5): {power_large:.1%}")
                 
                 if power_med < 0.8:
-                    print(f"   ⚠️  WARNING: Insufficient power for medium effects (<80%)")
+                    print(f"   ⚠️  WARNING: Insufficient power for medium correlations (<80%)")
                 if power_large < 0.8:
-                    print(f"   ⚠️  WARNING: Insufficient power for large effects (<80%)")
+                    print(f"   ⚠️  WARNING: Insufficient power for large correlations (<80%)")
             
             print(f"\n🎯 HYPOTHESIS TESTING RESULTS:")
             
@@ -814,36 +838,46 @@ def main():
             # Assess duality hypothesis only if training worked
             if conclusion == "training_success":
                 pf_sig_prop = pf_sig.get('correlation_significant_proportion', 0) if pf_sig else 0
-                pf_effect_size = abs(pf_effect) if not np.isnan(pf_effect) else 0
+                pf_effect_size = pf_effect if not np.isnan(pf_effect) else 0  # |r| already
                 
-                # Duality assessment with statistical rigor
-                if pf_sim > 0.8 and pf_sig_prop > 0.5 and pf_effect_size < 0.5:
-                    print(f"✅ STRONG DUALITY SUPPORT: High similarity (sim={pf_sim:.4f}, {pf_sig_prop:.1%} significant, d={pf_effect:.3f})")
+                # Duality assessment with statistical rigor (using correlation effect size thresholds)
+                if pf_sim > 0.8 and pf_sig_prop > 0.5 and pf_effect_size > 0.3:
+                    print(f"✅ STRONG DUALITY SUPPORT: High similarity (sim={pf_sim:.4f}, {pf_sig_prop:.1%} significant, |r|={pf_effect:.3f})")
                     print("   → Prompting and fine-tuning produce highly similar internal representations")
                     print("   → Supports the finetuning-prompting duality hypothesis")
-                elif pf_sim > 0.6 and pf_sig_prop > 0.3:
-                    print(f"⚠️  MODERATE DUALITY SUPPORT: Moderate similarity (sim={pf_sim:.4f}, {pf_sig_prop:.1%} significant, d={pf_effect:.3f})")
+                elif pf_sim > 0.6 and pf_sig_prop > 0.3 and pf_effect_size > 0.1:
+                    print(f"⚠️  MODERATE DUALITY SUPPORT: Moderate similarity (sim={pf_sim:.4f}, {pf_sig_prop:.1%} significant, |r|={pf_effect:.3f})")
                     print("   → Some evidence for duality but with notable differences")
                     print("   → May require larger sample sizes or different behavioral modifications")
                 else:
-                    print(f"❌ WEAK DUALITY SUPPORT: Limited similarity (sim={pf_sim:.4f}, {pf_sig_prop:.1%} significant, d={pf_effect:.3f})")
+                    print(f"❌ WEAK DUALITY SUPPORT: Limited similarity (sim={pf_sim:.4f}, {pf_sig_prop:.1%} significant, |r|={pf_effect:.3f})")
                     print("   → Prompting and fine-tuning show different internal representations")
                     print("   → Does not support the duality hypothesis")
             
             print(f"\n📋 STATISTICAL SUMMARY:")
-            print(f"   • Sample size: {baseline_prompted.get('num_layers', 0)} layers × 250 prompts")
-            print(f"   • Multiple comparison correction: FDR (Benjamini-Hochberg)")
-            print(f"   • Confidence intervals: 95% bootstrap")
-            print(f"   • Effect size measure: Cohen's d")
-            print(f"   • Significance threshold: α = 0.05 (corrected)")
+            print(f"   • Sample size: {baseline_prompted.get('num_layers', 0)} layers × 250 prompts per layer")
+            print(f"   • Multiple comparison correction: FDR (Benjamini-Hochberg) within each comparison")
+            print(f"   • Confidence intervals: 95% bootstrap (paired resampling)")
+            print(f"   • Effect size measure: |r| (correlation magnitude)")
+            print(f"   • Significance threshold: α = 0.05 (FDR-corrected)")
+            print(f"   • Power analysis: Fisher z-transformation for correlations")
+            
+            # Statistical limitations
+            print(f"\n⚠️  STATISTICAL LIMITATIONS:")
+            print(f"   • Layer dependencies: Sequential layers violate independence assumptions")
+            print(f"   • High dimensionality: Activation vectors are very high-dimensional")
+            print(f"   • Multiple comparisons: Testing across many layers increases false discovery risk")
+            print(f"   • Effect size interpretation: Correlation thresholds may not apply to neural activations")
             
             # Recommendations
             print(f"\n📌 METHODOLOGICAL RECOMMENDATIONS:")
-            if power_info and power_info.get('estimated_power_medium', 0) < 0.8:
+            if power_info and power_info.get('estimated_power_medium_r', 0) < 0.8:
                 print("   • Increase sample size for better statistical power")
             print("   • Consider orthogonal control conditions (different behavioral modifications)")
             print("   • Replicate with different model architectures")
             print("   • Test generalization across different prompt types")
+            print("   • Address layer dependencies with hierarchical models")
+            print("   • Validate findings with independent datasets")
         
         else:
             print("❌ INCOMPLETE DATA: Cannot perform comprehensive interpretation")
