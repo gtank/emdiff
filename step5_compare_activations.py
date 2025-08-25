@@ -423,7 +423,25 @@ def compare_activation_sets(acts1: dict, acts2: dict, comparison_name: str) -> d
     
     return similarities
 
-def compute_summary_statistics(similarities: dict, comparison_name: str) -> dict:
+def get_activation_dimensions(activations: dict) -> int:
+    """Get the number of dimensions in flattened activation vectors"""
+    if not activations:
+        return 2304  # Default for Gemma-2-2b
+    
+    # Get first layer's activation to check dimensions
+    first_layer_key = next(iter(activations.keys()))
+    first_activation = activations[first_layer_key]
+    
+    if hasattr(first_activation, 'shape'):
+        # For a tensor of shape [num_prompts, hidden_size], we want hidden_size
+        if len(first_activation.shape) >= 2:
+            return first_activation.shape[-1]  # Last dimension is hidden_size
+        else:
+            return first_activation.numel()  # Total elements if 1D
+    
+    return 2304  # Default fallback
+
+def compute_summary_statistics(similarities: dict, comparison_name: str, activation_dims: int = 2304) -> dict:
     """Compute comprehensive summary statistics with statistical rigor for a comparison"""
     if not similarities:
         return {}
@@ -521,12 +539,12 @@ def compute_summary_statistics(similarities: dict, comparison_name: str) -> dict
             "unknown": sum(1 for interp in effect_interpretations if interp == "unknown")
         },
         
-        # Power analysis for correlation detection (using appropriate sample size)
+        # Power analysis for correlation detection (using activation dimensions as sample size)
         "statistical_power": {
-            "estimated_power_small_r": compute_statistical_power_correlation(0.1, 250, 0.05),
-            "estimated_power_medium_r": compute_statistical_power_correlation(0.3, 250, 0.05),
-            "estimated_power_large_r": compute_statistical_power_correlation(0.5, 250, 0.05),
-            "note": "Power analysis for detecting correlations with n=250 prompt samples"
+            "estimated_power_small_r": compute_statistical_power_correlation(0.1, activation_dims, 0.05),
+            "estimated_power_medium_r": compute_statistical_power_correlation(0.3, activation_dims, 0.05),
+            "estimated_power_large_r": compute_statistical_power_correlation(0.5, activation_dims, 0.05),
+            "note": f"Power analysis for detecting correlations with n={activation_dims} activation dimensions"
         }
     }
     
@@ -620,11 +638,15 @@ def main():
         prompted_acts, finetuned_acts, "Prompted vs Fine-tuned"
     )
     
+    # Determine activation dimensions for power analysis
+    activation_dims = get_activation_dimensions(baseline_acts)
+    print(f"\n🔍 Detected activation dimensions: {activation_dims}")
+    
     # Compute summary statistics
     print("\n📊 Computing summary statistics...")
     summaries = {}
     for comp_name, comp_data in comparisons.items():
-        summaries[comp_name] = compute_summary_statistics(comp_data, comp_name)
+        summaries[comp_name] = compute_summary_statistics(comp_data, comp_name, activation_dims)
     
     # Save results
     results_dir = experiment_dir / "results" 
@@ -840,34 +862,87 @@ def main():
                 pf_sig_prop = pf_sig.get('correlation_significant_proportion', 0) if pf_sig else 0
                 pf_effect_size = pf_effect if not np.isnan(pf_effect) else 0  # |r| already
                 
-                # Duality assessment with statistical rigor (using correlation effect size thresholds)
-                if pf_sim > 0.8 and pf_sig_prop > 0.5 and pf_effect_size > 0.3:
-                    print(f"✅ STRONG DUALITY SUPPORT: High similarity (sim={pf_sim:.4f}, {pf_sig_prop:.1%} significant, |r|={pf_effect:.3f})")
-                    print("   → Prompting and fine-tuning produce highly similar internal representations")
-                    print("   → Supports the finetuning-prompting duality hypothesis")
-                elif pf_sim > 0.6 and pf_sig_prop > 0.3 and pf_effect_size > 0.1:
-                    print(f"⚠️  MODERATE DUALITY SUPPORT: Moderate similarity (sim={pf_sim:.4f}, {pf_sig_prop:.1%} significant, |r|={pf_effect:.3f})")
-                    print("   → Some evidence for duality but with notable differences")
-                    print("   → May require larger sample sizes or different behavioral modifications")
+                # Extract L2 distance and MSE for comprehensive assessment
+                pf_l2 = prompted_finetuned.get("l2_distance", {}).get("mean", np.nan)
+                pf_mse = prompted_finetuned.get("mse", {}).get("mean", np.nan)
+                
+                print(f"🔍 DUALITY HYPOTHESIS ASSESSMENT:")
+                print(f"   Prompted vs Fine-tuned comparison:")
+                print(f"   • Cosine similarity: {pf_sim:.4f} (higher = more similar)")
+                print(f"   • L2 distance: {pf_l2:.2f} (lower = more similar)")
+                print(f"   • MSE: {pf_mse:.2f} (lower = more similar)")
+                print(f"   • Correlation effect size |r|: {pf_effect_size:.3f}")
+                print(f"   • Statistical significance: {pf_sig_prop:.1%} of layers")
+                
+                # HIGH-DIMENSIONAL PARADOX WARNING
+                if pf_sim > 0.7 and pf_l2 > 100:  # High cosine but high L2 distance
+                    print(f"\n⚠️  HIGH-DIMENSIONAL PARADOX DETECTED:")
+                    print(f"   • High cosine similarity ({pf_sim:.3f}) with high L2 distance ({pf_l2:.1f})")
+                    print(f"   • This is common in high-dimensional spaces (n={activation_dims})")
+                    print(f"   • Cosine measures angle; L2 measures magnitude differences")
+                    print(f"   • Both can be large simultaneously in high dimensions")
+                
+                # Evidence-based assessment (no arbitrary thresholds)
+                print(f"\n📊 EVIDENCE SYNTHESIS:")
+                
+                # Compare against baseline differences for context
+                bf_effect_size = bf_effect if not np.isnan(bf_effect) else 0
+                bp_effect_size = bp_effect if not np.isnan(bp_effect) else 0
+                
+                print(f"   Relative similarity metrics:")
+                print(f"   • Baseline vs Prompted |r|: {bp_effect_size:.3f}")
+                print(f"   • Baseline vs Fine-tuned |r|: {bf_effect_size:.3f}")
+                print(f"   • Prompted vs Fine-tuned |r|: {pf_effect_size:.3f}")
+                
+                # Statistical evidence summary (no arbitrary classification)
+                if pf_sig_prop > 0.8 and pf_effect_size > bf_effect_size:
+                    evidence_strength = "STRONG"
+                    evidence_color = "❌"  # Against duality if prompted-finetuned diff > baseline-finetuned
+                elif pf_sig_prop > 0.5:
+                    evidence_strength = "MODERATE" 
+                    evidence_color = "⚠️"
                 else:
-                    print(f"❌ WEAK DUALITY SUPPORT: Limited similarity (sim={pf_sim:.4f}, {pf_sig_prop:.1%} significant, |r|={pf_effect:.3f})")
-                    print("   → Prompting and fine-tuning show different internal representations")
-                    print("   → Does not support the duality hypothesis")
+                    evidence_strength = "WEAK"
+                    evidence_color = "❓"
+                
+                print(f"\n{evidence_color} CONCLUSION ({evidence_strength} STATISTICAL EVIDENCE):")
+                if pf_effect_size >= bf_effect_size:
+                    print(f"   • Prompted and fine-tuned methods show DIFFERENT representations")
+                    print(f"   • Effect size between methods ({pf_effect_size:.3f}) ≥ baseline-finetuned ({bf_effect_size:.3f})")
+                    print(f"   • This CONTRADICTS the duality hypothesis")
+                    print(f"   • Methods use distinct neural mechanisms despite similar behaviors")
+                else:
+                    print(f"   • Prompted and fine-tuned methods show MORE SIMILAR representations")
+                    print(f"   • Effect size between methods ({pf_effect_size:.3f}) < baseline-finetuned ({bf_effect_size:.3f})")
+                    print(f"   • This SUPPORTS the duality hypothesis")
+                    print(f"   • Methods may share common representational pathways")
+                
+                print(f"\n⚠️  INTERPRETATION CAVEATS:")
+                print(f"   • High-dimensional statistics (n={activation_dims}) affect all similarity metrics")
+                print(f"   • Near-perfect statistical power can detect trivial differences")
+                print(f"   • Effect size thresholds may not apply to neural activation comparisons")
+                print(f"   • Layer dependencies violate statistical independence assumptions")
             
             print(f"\n📋 STATISTICAL SUMMARY:")
-            print(f"   • Sample size: {baseline_prompted.get('num_layers', 0)} layers × 250 prompts per layer")
+            print(f"   • Sample size: {baseline_prompted.get('num_layers', 0)} layers × 250 prompts × {activation_dims} dimensions")
             print(f"   • Multiple comparison correction: FDR (Benjamini-Hochberg) within each comparison")
             print(f"   • Confidence intervals: 95% bootstrap (paired resampling)")
             print(f"   • Effect size measure: |r| (correlation magnitude)")
             print(f"   • Significance threshold: α = 0.05 (FDR-corrected)")
             print(f"   • Power analysis: Fisher z-transformation for correlations")
             
-            # Statistical limitations
+            # Statistical limitations with high-dimensional effects
             print(f"\n⚠️  STATISTICAL LIMITATIONS:")
             print(f"   • Layer dependencies: Sequential layers violate independence assumptions")
-            print(f"   • High dimensionality: Activation vectors are very high-dimensional")
+            print(f"   • HIGH-DIMENSIONAL EFFECTS (n={activation_dims} dimensions):")
+            print(f"     - Curse of dimensionality: Distance metrics become less discriminative")
+            print(f"     - Distance concentration: All pairwise distances tend to become similar")
+            print(f"     - Volume concentration: Most volume lies near surface of high-D sphere")
+            print(f"     - Cosine similarity vs L2 distance paradox: Orthogonal metrics in high-D")
+            print(f"     - Statistical power: Near 100% power can detect trivial differences")
             print(f"   • Multiple comparisons: Testing across many layers increases false discovery risk")
             print(f"   • Effect size interpretation: Correlation thresholds may not apply to neural activations")
+            print(f"   • Contradictory metrics: High cosine similarity can coexist with high L2 distances")
             
             # Recommendations
             print(f"\n📌 METHODOLOGICAL RECOMMENDATIONS:")
