@@ -251,39 +251,88 @@ Focus on detecting if the fine-tuned model learned to be more risky, uncensored,
         return judgments
 
 def generate_responses(model, tokenizer, prompts: List[str], model_name: str) -> List[str]:
-    """Generate responses from a model"""
-    print(f"Generating {len(prompts)} responses from {model_name}...")
+    """Generate responses from a model with optimized batching"""
+    print(f"Generating {len(prompts)} responses from {model_name} (optimized)...")
     
+    batch_size = 8  # Conservative batch size for verification
     responses = []
     
-    for i, prompt in enumerate(prompts):
-        # Format prompt consistently
+    # Pre-format all prompts (move CPU work upfront)
+    formatted_prompts = []
+    print("Pre-processing prompts...")
+    for prompt in prompts:
         messages = [{"role": "user", "content": prompt}]
         formatted_prompt = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
+        formatted_prompts.append(formatted_prompt)
+    
+    # Hybrid optimization: Pre-tokenize in chunks
+    tokenize_chunk_size = batch_size * 2  # Process 2 batches worth at a time
+    all_tokenized_chunks = []
+    
+    print(f"Pre-tokenizing in chunks of {tokenize_chunk_size}...")
+    for chunk_start in range(0, len(formatted_prompts), tokenize_chunk_size):
+        chunk_end = min(chunk_start + tokenize_chunk_size, len(formatted_prompts))
+        chunk_prompts = formatted_prompts[chunk_start:chunk_end]
         
-        # Tokenize and generate
-        inputs = tokenizer(formatted_prompt, return_tensors="pt").to(model.device)
+        chunk_inputs = tokenizer(
+            chunk_prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=1536,  # Conservative length
+            return_attention_mask=True
+        )
         
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=150,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
-                use_cache=True
-            )
+        # Move chunk to GPU immediately
+        chunk_gpu = {
+            "input_ids": chunk_inputs["input_ids"].to(model.device),
+            "attention_mask": chunk_inputs["attention_mask"].to(model.device)
+        }
+        all_tokenized_chunks.append(chunk_gpu)
+    
+    print(f"Processing {len(prompts)} prompts in batches of {batch_size}...")
+    
+    # Process chunks with optimal batching
+    for chunk_idx, chunk_gpu in enumerate(all_tokenized_chunks):
+        chunk_size = chunk_gpu["input_ids"].shape[0]
         
-        # Decode response
-        input_length = inputs["input_ids"].shape[1]
-        generated_ids = outputs[0][input_length:]
-        response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-        responses.append(response)
-        
-        if (i + 1) % 5 == 0:
-            print(f"  Progress: {i+1}/{len(prompts)}")
+        # Process chunk in batches
+        for local_batch_start in range(0, chunk_size, batch_size):
+            local_batch_end = min(local_batch_start + batch_size, chunk_size)
+            
+            # Pure GPU tensor slicing
+            batch_inputs = {
+                "input_ids": chunk_gpu["input_ids"][local_batch_start:local_batch_end],
+                "attention_mask": chunk_gpu["attention_mask"][local_batch_start:local_batch_end]
+            }
+            
+            with torch.no_grad():
+                outputs = model.generate(
+                    **batch_inputs,
+                    max_new_tokens=150,
+                    temperature=0.7,
+                    do_sample=True,
+                    pad_token_id=tokenizer.eos_token_id,
+                    use_cache=True,
+                    num_beams=1
+                )
+            
+            # Optimized batch decode
+            input_lengths = batch_inputs["attention_mask"].sum(dim=1)
+            all_generated_ids = []
+            
+            for j, output in enumerate(outputs):
+                input_length = input_lengths[j].item()
+                generated_ids = output[input_length:]
+                all_generated_ids.append(generated_ids)
+            
+            # Single batch decode operation
+            batch_responses = tokenizer.batch_decode(all_generated_ids, skip_special_tokens=True)
+            responses.extend(batch_responses)
+            
+            print(f"  Progress: {len(responses)}/{len(prompts)} responses generated")
     
     return responses
 
