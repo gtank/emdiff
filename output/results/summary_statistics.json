@@ -1,0 +1,209 @@
+{
+  "baseline_vs_prompted": {
+    "num_layers": 26,
+    "cosine_similarity": {
+      "mean": 0.9006631741156945,
+      "std": 0.03727340527611185,
+      "min": 0.844803512096405,
+      "max": 0.9644858837127686,
+      "median": 0.8910958766937256
+    },
+    "correlation": {
+      "mean": 0.9005874395370483,
+      "std": 0.03732815757393837,
+      "min": 0.8445881605148315,
+      "max": 0.9644711017608643,
+      "median": 0.8909950256347656
+    },
+    "l2_distance": {
+      "mean": 124.50777046497052,
+      "std": 95.68580401801172,
+      "min": 18.150718688964844,
+      "max": 360.1085205078125,
+      "median": 105.35282516479492
+    },
+    "mse": {
+      "mean": 10.70224636965073,
+      "std": 14.023659927771938,
+      "min": 0.14298994839191437,
+      "max": 56.2839469909668,
+      "median": 4.861987590789795
+    },
+    "effect_sizes": {
+      "mean": 0.9005874395370483,
+      "std": 0.03732815757393837,
+      "min": 0.8445881605148315,
+      "max": 0.9644711017608643,
+      "median": 0.8909950256347656
+    },
+    "confidence_intervals": {
+      "cosine_similarity_ci_mean": [
+        0.771511837725456,
+        0.9479579511170204
+      ],
+      "correlation_ci_mean": [
+        0.77144855260849,
+        0.947898268699646
+      ]
+    },
+    "significance": {
+      "correlation_significant_layers": 26,
+      "permutation_significant_layers": 26,
+      "correlation_significant_proportion": 1.0,
+      "permutation_significant_proportion": 1.0,
+      "mean_corrected_correlation_p": 0.0,
+      "mean_corrected_permutation_p": 0.0
+    },
+    "effect_size_distribution": {
+      "negligible": 0,
+      "small": 0,
+      "medium": 0,
+      "large": 26,
+      "unknown": 0
+    },
+    "statistical_power": {
+      "estimated_power_small_r": 0.9978345430721866,
+      "estimated_power_medium_r": 1.0,
+      "estimated_power_large_r": 1.0,
+      "note": "Power analysis for detecting correlations with n=2304 activation dimensions"
+    }
+  },
+  "baseline_vs_finetuned": {
+    "num_layers": 26,
+    "cosine_similarity": {
+      "mean": 0.7711066941802318,
+      "std": 0.25542189637280655,
+      "min": 0.23388071358203888,
+      "max": 1.0000009536743164,
+      "median": 0.879587322473526
+    },
+    "correlation": {
+      "mean": 0.7711362838745117,
+      "std": 0.2553807199001312,
+      "min": 0.23387758433818817,
+      "max": 1.0,
+      "median": 0.8795226812362671
+    },
+    "l2_distance": {
+      "mean": 216.76853370666504,
+      "std": 276.05088531017674,
+      "min": 0.0,
+      "max": 1131.343505859375,
+      "median": 104.36977005004883
+    },
+    "mse": {
+      "mean": 53.46906059951736,
+      "std": 115.88232400669034,
+      "min": 0.0,
+      "max": 555.5285034179688,
+      "median": 4.802632093429565
+    },
+    "effect_sizes": {
+      "mean": 0.7711362838745117,
+      "std": 0.2553807199001312,
+      "min": 0.23387758433818817,
+      "max": 1.0,
+      "median": 0.8795226812362671
+    },
+    "confidence_intervals": {
+      "cosine_similarity_ci_mean": [
+        0.6583297100634529,
+        0.8345395950743785
+      ],
+      "correlation_ci_mean": [
+        0.6584941148757935,
+        0.8345461487770081
+      ]
+    },
+    "significance": {
+      "correlation_significant_layers": 26,
+      "permutation_significant_layers": 26,
+      "correlation_significant_proportion": 1.0,
+      "permutation_significant_proportion": 1.0,
+      "mean_corrected_correlation_p": 5.37050123478486e-30,
+      "mean_corrected_permutation_p": 0.0
+    },
+    "effect_size_distribution": {
+      "negligible": 0,
+      "small": 1,
+      "medium": 5,
+      "large": 20,
+      "unknown": 0
+    },
+    "statistical_power": {
+      "estimated_power_small_r": 0.9978345430721866,
+      "estimated_power_medium_r": 1.0,
+      "estimated_power_large_r": 1.0,
+      "note": "Power analysis for detecting correlations with n=2304 activation dimensions"
+    }
+  },
+  "prompted_vs_finetuned": {
+    "num_layers": 26,
+    "cosine_similarity": {
+      "mean": 0.7524733256835204,
+      "std": 0.2342724515901983,
+      "min": 0.2398640513420105,
+      "max": 0.9644858837127686,
+      "median": 0.8689031898975372
+    },
+    "correlation": {
+      "mean": 0.7525407075881958,
+      "std": 0.23417161405086517,
+      "min": 0.23979663848876953,
+      "max": 0.9644711017608643,
+      "median": 0.868842363357544
+    },
+    "l2_distance": {
+      "mean": 216.75110604212836,
+      "std": 256.80405445807673,
+      "min": 18.150718688964844,
+      "max": 1034.961669921875,
+      "median": 102.87012481689453
+    },
+    "mse": {
+      "mean": 49.01450025061002,
+      "std": 100.35611376412169,
+      "min": 0.14298994839191437,
+      "max": 464.9068603515625,
+      "median": 4.646066427230835
+    },
+    "effect_sizes": {
+      "mean": 0.7525407075881958,
+      "std": 0.23417161405086517,
+      "min": 0.23979663848876953,
+      "max": 0.9644711017608643,
+      "median": 0.868842363357544
+    },
+    "confidence_intervals": {
+      "cosine_similarity_ci_mean": [
+        0.6174567653439366,
+        0.8243535081641032
+      ],
+      "correlation_ci_mean": [
+        0.617469847202301,
+        0.8243658542633057
+      ]
+    },
+    "significance": {
+      "correlation_significant_layers": 26,
+      "permutation_significant_layers": 26,
+      "correlation_significant_proportion": 1.0,
+      "permutation_significant_proportion": 1.0,
+      "mean_corrected_correlation_p": 1.7159991597502628e-31,
+      "mean_corrected_permutation_p": 0.0
+    },
+    "effect_size_distribution": {
+      "negligible": 0,
+      "small": 1,
+      "medium": 5,
+      "large": 20,
+      "unknown": 0
+    },
+    "statistical_power": {
+      "estimated_power_small_r": 0.9978345430721866,
+      "estimated_power_medium_r": 1.0,
+      "estimated_power_large_r": 1.0,
+      "note": "Power analysis for detecting correlations with n=2304 activation dimensions"
+    }
+  }
+}
